@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net4.8</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <OutputPath>C:\Program Files (x86)\Steam\steamapps\common\Puck\Plugins\PlayerQoL</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+ <PropertyGroup>
+  <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+</PropertyGroup>
+
+<PropertyGroup>
+  <Description>Client hotkeys for Puck: dive/dash actions and bindable chat commands.</Description>
+</PropertyGroup>
+
+  <ItemGroup>
+    <!-- Exclude Puck source files - we only reference the compiled DLL -->
+    <Compile Remove="Puck\**" />
+    <EmbeddedResource Remove="Puck\**" />
+    <None Remove="Puck\**" />
+    
+    <!-- Include ping sound files to be copied to output -->
+    <None Include="PingSounds\*.mp3">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>PingSounds\%(Filename)%(Extension)</Link>
+    </None>
+    <None Include="PingSounds\*.wav">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>PingSounds\%(Filename)%(Extension)</Link>
+    </None>
+    <None Include="PingSounds\*.ogg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>PingSounds\%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Reference all game libs from libs/, but DO NOT copy them next to the plugin -->
+    <Libs Include="libs\*.dll" Exclude="libs\System.*.dll" />
+    <Reference Include="@(Libs)">
+      <HintPath>%(Libs.FullPath)</HintPath>
+      <Private>false</Private> <!-- critical: prevents copying, avoids type identity split -->
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="PostBuildDeploy" AfterTargets="Build">
+    <PropertyGroup>
+      <TargetDir>C:\Program Files (x86)\Steam\steamapps\common\Puck\Plugins\PlayerQoL</TargetDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(TargetDir)" />
+    <MakeDir Directories="$(TargetDir)\PingSounds" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TargetDir)" OverwriteReadOnlyFiles="true" />
+    <!-- Copy ping sounds to deployment folder -->
+    <Copy SourceFiles="@(PingSoundFiles)" DestinationFolder="$(TargetDir)\PingSounds" OverwriteReadOnlyFiles="true" />
+  </Target>
+  
+  <ItemGroup>
+    <!-- Collect ping sound files for deployment -->
+    <PingSoundFiles Include="$(OutputPath)PingSounds\*.mp3" />
+    <PingSoundFiles Include="$(OutputPath)PingSounds\*.wav" />
+    <PingSoundFiles Include="$(OutputPath)PingSounds\*.ogg" />
+  </ItemGroup>
+</Project>

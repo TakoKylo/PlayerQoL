@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+*.user
+
+# Game DLLs (copy from Puck_Data/Managed locally; do not commit)
+libs/
+
+# IDE / editor
+.vs/
+.idea/
+*.suo
+*.userprefs
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
