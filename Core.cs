@@ -20,7 +20,7 @@ namespace PoncePuck.Keybinds
         // Current config paths (ModHub/PlayerQoL)
         private static string CmdPath    => Path.Combine(PlayerQoLDir, "PonceKeybinds.Commands.json");
         private static string LocalMutePath => Path.Combine(PlayerQoLDir, "PonceLocalMute.json");
-        private static string SoundsConfigPath => Path.Combine(GameDir, "oomtm450_sounds_clientconfig.json");
+        private static string SoundsConfigPath => Path.Combine(ConfigDir, "oomtm450_sounds_clientconfig.json");
         
         // Legacy paths (config/playerinput) for migration
         private static string LegacyPlayerInputDir => Path.Combine(ConfigDir, "playerinput");

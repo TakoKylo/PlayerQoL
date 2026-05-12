@@ -207,6 +207,11 @@ namespace PoncePuck.Keybinds
         // Debug settings
         public bool enableDebugLogging = false;  // Enable debug logging (default off)
 
+        // IFeelLeftOut goalie wide-view camera (integrated from IFeelLeftOut by gubby)
+        public bool enableLeftOutCamera = true;          // Enable goalie wide-view camera feature
+        public string leftOutCameraToggleKey = "F1";     // Toggle key (UnityEngine.InputSystem.Key name)
+        public string leftOutCameraReloadKey = "F2";     // Reload settings key
+
         // Helper methods for position settings
         public float? GetFOVForPosition(HockeyPosition pos)
         {

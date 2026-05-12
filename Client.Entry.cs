@@ -5,7 +5,7 @@ using HarmonyLib;
 using Unity.Collections;
 using UnityEngine;
 
-public sealed class PoncePuck_Keybinds_ClientMod : global::IPuckMod
+public sealed class PoncePuck_Keybinds_ClientMod : global::IPuckPlugin
 {
     private Harmony _harmony;
     private GameObject _host;

@@ -427,7 +427,7 @@ namespace PoncePuck.Keybinds
         {
             try
             {
-                string soundsConfigPath = Path.Combine(Path.GetFullPath(Path.Combine(Application.dataPath, "..")), "oomtm450_sounds_clientconfig.json");
+                string soundsConfigPath = Path.Combine(Path.GetFullPath(Path.Combine(Application.dataPath, "..")), "config", "oomtm450_sounds_clientconfig.json");
                 
                 if (!System.IO.File.Exists(soundsConfigPath))
                     return;
