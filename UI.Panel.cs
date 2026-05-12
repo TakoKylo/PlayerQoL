@@ -17,6 +17,7 @@ namespace PoncePuck.Keybinds
     public sealed partial class KeybindRunner
     {
         public static bool AdminModeEnabled => _instance?._cmd?.enableAdminSettings ?? false;
+        public static KeybindRunner Instance => _instance;
         private static KeybindRunner _instance;
         
         public KeybindRunner()

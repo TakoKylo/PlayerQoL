@@ -1,5 +1,10 @@
 // Integrated from "IFeelLeftOut" by gubby (com.gubby.ifeelleftout, v2.0.0).
 // Wide-view secondary camera for goalies. Toggle key reads from CommandKeybindConfig.
+//
+// Hot-path note: Harmony patches PlayerCamera.OnTick, which fires per-camera per-tick
+// for EVERY player in the scene. The Tick entry point MUST early-exit for non-local
+// cameras before doing any FindFirstObjectByType work, or it will tank FPS as the
+// player count grows.
 
 using System;
 using HarmonyLib;
@@ -23,36 +28,12 @@ namespace PoncePuck.Keybinds
         private static GameObject leftOutCameraGO;
         private static bool keyWasPressed;
         private static bool reloadKeyWasPressed;
-        private static bool isLocalPlayerInstance;
         private static Vector3 lastKnownGoodPosition = Vector3.zero;
         private static bool hasValidPosition;
         private static PlayerTeam lastSeenTeam = PlayerTeam.None;
 
-        private static bool DebugEnabled
-        {
-            get
-            {
-                try
-                {
-                    var runner = UnityEngine.Object.FindFirstObjectByType<KeybindRunner>();
-                    return runner != null && runner.CommandConfig != null && runner.CommandConfig.enableDebugLogging;
-                }
-                catch { return false; }
-            }
-        }
-
-        private static CommandKeybindConfig Cfg
-        {
-            get
-            {
-                try
-                {
-                    var runner = UnityEngine.Object.FindFirstObjectByType<KeybindRunner>();
-                    return runner?.CommandConfig;
-                }
-                catch { return null; }
-            }
-        }
+        private static CommandKeybindConfig Cfg => KeybindRunner.Instance?.CommandConfig;
+        private static bool DebugEnabled => Cfg?.enableDebugLogging ?? false;
 
         private static void Log(string msg) { if (DebugEnabled) Debug.Log("[PPKB/LeftOut] " + msg); }
         private static void LogError(string msg) { Debug.LogError("[PPKB/LeftOut] " + msg); }
@@ -72,7 +53,6 @@ namespace PoncePuck.Keybinds
                 leftOutCameraGO = null;
                 playerCam = null;
                 localPlayer = null;
-                isLocalPlayerInstance = false;
                 toggleActive = false;
                 initialized = false;
                 keyWasPressed = false;
@@ -82,29 +62,6 @@ namespace PoncePuck.Keybinds
                 lastSeenTeam = PlayerTeam.None;
             }
             catch (Exception e) { LogError("Reset failed: " + e.Message); }
-        }
-
-        private static bool IsLocalPlayerInstance()
-        {
-            if (!isLocalPlayerInstance && localPlayer != null)
-            {
-                var pm = UnityEngine.Object.FindFirstObjectByType<PlayerManager>();
-                if (pm != null)
-                {
-                    var lp = pm.GetLocalPlayer();
-                    isLocalPlayerInstance = lp != null && lp == localPlayer;
-                }
-            }
-            return isLocalPlayerInstance;
-        }
-
-        private static void EnsurePlayerReference()
-        {
-            if (localPlayer == null)
-            {
-                var pm = UnityEngine.Object.FindFirstObjectByType<PlayerManager>();
-                if (pm != null) localPlayer = pm.GetLocalPlayer();
-            }
         }
 
         private static bool IsValidCameraPosition(Vector3 p)
@@ -136,7 +93,6 @@ namespace PoncePuck.Keybinds
 
         private static void EnsureLeftOutCameraExists()
         {
-            if (!IsLocalPlayerInstance()) return;
             if (leftOutCamera != null && leftOutCameraGO != null) return;
 
             if (leftOutCameraGO != null) UnityEngine.Object.DestroyImmediate(leftOutCameraGO);
@@ -153,18 +109,20 @@ namespace PoncePuck.Keybinds
             }
         }
 
-        private static void EnsurePlayerCameraExists()
+        private static void EnsurePlayerCameraExists(PlayerCamera instance)
         {
-            if (!IsLocalPlayerInstance() || playerCam != null || localPlayer == null) return;
-            if (localPlayer.PlayerCamera != null && ((BaseCamera)localPlayer.PlayerCamera).UnityCamera != null)
-                playerCam = ((BaseCamera)localPlayer.PlayerCamera).UnityCamera;
+            if (playerCam != null) return;
+            // Prefer the patched instance (guaranteed by IsOwner check) over
+            // localPlayer.PlayerCamera, which can lag behind during spawn.
+            var pc = instance != null ? instance : (localPlayer != null ? localPlayer.PlayerCamera : null);
+            if (pc != null && ((BaseCamera)pc).UnityCamera != null)
+                playerCam = ((BaseCamera)pc).UnityCamera;
         }
 
         private static void InitializeLeftOutCamera(PlayerTeam team)
         {
             try
             {
-                if (!IsLocalPlayerInstance()) return;
                 EnsureLeftOutCameraExists();
                 if (leftOutCamera == null) { LogError("Failed to create left-out camera"); return; }
 
@@ -197,17 +155,14 @@ namespace PoncePuck.Keybinds
             return fallback;
         }
 
-        private static void HandleInput()
+        private static void HandleInput(CommandKeybindConfig cfg)
         {
-            if (!IsLocalPlayerInstance()) return;
             var kb = Keyboard.current;
             if (kb == null) return;
 
-            var cfg = Cfg;
             var toggleKey = ParseKey(cfg?.leftOutCameraToggleKey, Key.F1);
             var reloadKey = ParseKey(cfg?.leftOutCameraReloadKey, Key.F2);
 
-            // Reload trigger: re-init the camera
             bool reloadPressed = ((ButtonControl)kb[reloadKey]).wasPressedThisFrame;
             if (reloadPressed && !reloadKeyWasPressed && localPlayer != null && localPlayer.Team != PlayerTeam.None && localPlayer.Team != PlayerTeam.Spectator)
             {
@@ -216,7 +171,6 @@ namespace PoncePuck.Keybinds
             }
             reloadKeyWasPressed = reloadPressed;
 
-            // Toggle
             bool pressed = ((ButtonControl)kb[toggleKey]).isPressed;
             if (pressed && !keyWasPressed)
             {
@@ -238,7 +192,7 @@ namespace PoncePuck.Keybinds
 
         private static void UpdateCameraStates()
         {
-            if (!IsLocalPlayerInstance() || leftOutCamera == null || playerCam == null) return;
+            if (leftOutCamera == null || playerCam == null) return;
             if (leftOutCamera.enabled == toggleActive) return;
 
             if (toggleActive)
@@ -263,24 +217,46 @@ namespace PoncePuck.Keybinds
 
         public static void Tick(PlayerCamera instance)
         {
+            // === HOT PATH: this runs per-PlayerCamera per-tick (i.e. N players × tick rate).
+            // Everything before the local-player check must be O(1) — no scene scans.
             try
             {
+                if (instance == null) return;
+
+                // Fast filter: PlayerCamera is spawned with SpawnWithOwnership(OwnerClientId),
+                // so IsOwner is true exactly for the local client's camera. Cheaper and more
+                // reliable than chasing Player.IsLocalPlayer (which needs IsPlayerObject set).
+                if (!instance.IsOwner) return;
+
                 if (IsDedicatedServer()) return;
+
+                var camPlayer = instance.Player;
+                if (camPlayer == null) return;
+
+                // Cached static — no FindFirstObjectByType. If the runner isn't up yet
+                // (mod still initializing), fall back to defaults rather than bailing.
                 var cfg = Cfg;
                 if (cfg != null && !cfg.enableLeftOutCamera) return;
 
-                EnsurePlayerReference();
-                if (localPlayer == null) return;
+                // Cache the local player reference. If it changed (e.g. respawn),
+                // wipe transient state.
+                if (localPlayer != camPlayer)
+                {
+                    localPlayer = camPlayer;
+                    playerCam = null;
+                    initialized = false;
+                    toggleActive = false;
+                    lastSeenTeam = PlayerTeam.None;
+                }
 
                 DetectTeamChange();
+                if (localPlayer == null) return; // DetectTeamChange may have called Reset()
 
-                // Only goalies get the left-out camera
-                if (localPlayer.Role != PlayerRole.Goalie || instance != localPlayer.PlayerCamera) return;
+                if (localPlayer.Role != PlayerRole.Goalie) return;
 
-                EnsurePlayerCameraExists();
+                EnsurePlayerCameraExists(instance);
                 EnsureLeftOutCameraExists();
-
-                HandleInput();
+                HandleInput(cfg);
 
                 if (!initialized && localPlayer.Team != PlayerTeam.None && localPlayer.Team != PlayerTeam.Spectator)
                     InitializeLeftOutCamera(localPlayer.Team);
@@ -298,7 +274,8 @@ namespace PoncePuck.Keybinds
         {
             try
             {
-                if (IsDedicatedServer() || localPlayer == null || instance != localPlayer.PlayerCamera) return;
+                if (IsDedicatedServer() || instance == null) return;
+                if (!instance.IsOwner) return; // only the local camera's despawn matters
                 Reset();
             }
             catch (Exception e) { LogError("OnDespawn failed: " + e.Message); }
