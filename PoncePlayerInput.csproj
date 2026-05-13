@@ -51,7 +51,6 @@
     <MakeDir Directories="$(TargetDir)" />
     <MakeDir Directories="$(TargetDir)\PingSounds" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TargetDir)" OverwriteReadOnlyFiles="true" />
-    <!-- Copy ping sounds to deployment folder -->
     <Copy SourceFiles="@(PingSoundFiles)" DestinationFolder="$(TargetDir)\PingSounds" OverwriteReadOnlyFiles="true" />
   </Target>
   

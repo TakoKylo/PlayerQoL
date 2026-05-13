@@ -151,7 +151,7 @@ namespace PoncePuck.Keybinds
                 tracker.style.borderBottomLeftRadius = 3;
                 tracker.style.borderBottomRightRadius = 3;
             }
-            
+
             // Style the dragger (thumb)
             var dragger = slider.Q(className: "unity-slider__dragger");
             if (dragger != null)
@@ -164,7 +164,7 @@ namespace PoncePuck.Keybinds
                 dragger.style.borderBottomLeftRadius = 8;
                 dragger.style.borderBottomRightRadius = 8;
             }
-            
+
             // Style the fill/progress
             var draggerBorder = slider.Q(className: "unity-slider__dragger-border");
             if (draggerBorder != null)
@@ -250,6 +250,16 @@ namespace PoncePuck.Keybinds
                     Debug.Log("[PPKB] ESC pressed while panel visible - closing");
                     FullClosePPKBPanel();
                     return;
+                }
+            }
+            else if (!_isCapturing)
+            {
+                // ESC closes base game secondary menus (Settings, Mods, ...)
+                // that the vanilla pause action ignores.
+                var kb = Keyboard.current;
+                if (kb != null && kb.escapeKey.wasPressedThisFrame)
+                {
+                    if (BaseMenuPatches.TryCloseTopmostSecondaryMenu()) return;
                 }
             }
 

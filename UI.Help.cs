@@ -125,14 +125,19 @@ namespace PoncePuck.Keybinds
             s.style.marginLeft = 6;
             s.style.marginRight = 6;
 
-            // Try both legacy and new class names
-            var tracker = s.Q<VisualElement>(className: "unity-tracker") ?? s.Q<VisualElement>(className: "unity-slider__tracker");
-            var dragger = s.Q<VisualElement>(className: "unity-dragger") ?? s.Q<VisualElement>(className: "unity-slider__dragger");
+            // Cover legacy, current, and base-slider USS class names — Unity
+            // renames these between versions and only one will match per build.
+            var tracker = s.Q<VisualElement>(className: "unity-base-slider__tracker")
+                       ?? s.Q<VisualElement>(className: "unity-slider__tracker")
+                       ?? s.Q<VisualElement>(className: "unity-tracker");
+            var dragger = s.Q<VisualElement>(className: "unity-base-slider__dragger")
+                       ?? s.Q<VisualElement>(className: "unity-slider__dragger")
+                       ?? s.Q<VisualElement>(className: "unity-dragger");
             if (tracker != null)
             {
                 tracker.style.height = 4;
                 tracker.style.marginTop = 11; // vertically center the 4px rail in 26px
-                tracker.style.backgroundColor = new StyleColor(new Color(1, 1, 1, 0.15f));
+                tracker.style.backgroundColor = new StyleColor(new Color(1f, 1f, 1f, 0.35f));
                 tracker.style.borderTopLeftRadius = 2;
                 tracker.style.borderTopRightRadius = 2;
                 tracker.style.borderBottomLeftRadius = 2;
