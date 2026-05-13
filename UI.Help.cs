@@ -616,12 +616,20 @@ namespace PoncePuck.Keybinds
                         debugTitle.style.marginTop = 16;
                         _settingsSectionVE.Add(debugTitle);
 
-                        var debugToggleRow = MakeToggleRow("DEBUG LOGGING", _cmd.enableDebugLogging, on => 
+                        var debugToggleRow = MakeToggleRow("DEBUG LOGGING", _cmd.enableDebugLogging, on =>
                         {
                             _cmd.enableDebugLogging = on;
                             SaveConfigsAndRefresh();
                         });
                         _settingsSectionVE.Add(debugToggleRow);
+
+                        var devConsoleRow = MakeToggleRow("DEV CONSOLE (`)", _cmd.enableDevConsole, on =>
+                        {
+                            _cmd.enableDevConsole = on;
+                            SaveConfigsAndRefresh();
+                            if (!on) DevConsole.Instance?.Close();
+                        });
+                        _settingsSectionVE.Add(devConsoleRow);
 
                         // Initialize panel color values (only if panel color controls exist)
                         {

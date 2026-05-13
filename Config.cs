@@ -207,6 +207,13 @@ namespace PoncePuck.Keybinds
         // Debug settings
         public bool enableDebugLogging = false;  // Enable debug logging (default off)
 
+        // In-game developer console (toggle with backtick when enabled)
+        public bool enableDevConsole = false;
+        public float devConsoleX = 40f;
+        public float devConsoleY = 40f;
+        public float devConsoleW = 900f;
+        public float devConsoleH = 460f;
+
         // IFeelLeftOut goalie wide-view camera (integrated from IFeelLeftOut by gubby)
         public bool enableLeftOutCamera = true;          // Enable goalie wide-view camera feature
         public string leftOutCameraToggleKey = "F1";     // Toggle key (UnityEngine.InputSystem.Key name)

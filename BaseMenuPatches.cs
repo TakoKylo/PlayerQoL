@@ -62,6 +62,10 @@ namespace PoncePuck.Keybinds
         {
             try
             {
+                // Dev console is a focusable text input — chat keys typed inside it
+                // are user input, not chat-open requests.
+                if (DevConsole.Instance != null && DevConsole.Instance.IsOpen) return true;
+
                 var ui = MonoBehaviourSingleton<UIManager>.Instance;
                 if (ui == null) return false;
                 if (ui.Settings != null && ui.Settings.IsVisible) return true;

@@ -216,7 +216,7 @@ namespace PoncePuck.Keybinds
             catch (Exception e) { Debug.LogException(e); }
         }
 
-        private void SaveConfigsAndRefresh()
+        public void SaveConfigsAndRefresh()
         {
             try
             {

@@ -46,6 +46,9 @@ public sealed class PoncePuck_Keybinds_ClientMod : global::IPuckPlugin
                 _host.AddComponent<PoncePuck.LocalMute.LocalMuteRunner>();
                 Debug.Log("[PPKB] LocalMute runner added.");
 
+                // Dev console — only takes effect when enableDevConsole is set in config.
+                PoncePuck.Keybinds.DevConsole.AttachTo(_host);
+
                 // Start live-gradient animation runner
                 PoncePuck.Keybinds.LiveGradientSystem.Initialize(_host);
                 Debug.Log("[PPKB] Live gradient system initialized.");
