@@ -252,17 +252,6 @@ namespace PoncePuck.Keybinds
                     return;
                 }
             }
-            else if (!_isCapturing)
-            {
-                // ESC closes base game secondary menus (Settings, Mods, ...)
-                // that the vanilla pause action ignores.
-                var kb = Keyboard.current;
-                if (kb != null && kb.escapeKey.wasPressedThisFrame)
-                {
-                    if (BaseMenuPatches.TryCloseTopmostSecondaryMenu()) return;
-                }
-            }
-
             // Close panel via our close button flag
             if (_ppkbCloseButtonClicked)
             {
@@ -1136,9 +1125,9 @@ namespace PoncePuck.Keybinds
         private HockeyPosition _activePositionTab = HockeyPosition.LeftWing;
         private UITK.VisualElement _posSettingRowsRoot;
 
-        private static readonly List<string> PositionChoices = new List<string> 
-        { 
-            "Left Wing", "Center", "Right Wing", "Left Defense", "Right Defense", "Goalie" 
+        private static readonly List<string> PositionChoices = new List<string>
+        {
+            "Left Wing", "Center", "Right Wing", "Left Defense", "Right Defense", "Goalie", "Spectator"
         };
         private static readonly List<string> SettingChoices = new List<string> 
         { 
@@ -1168,7 +1157,7 @@ namespace PoncePuck.Keybinds
             posTabBar.style.flexWrap = UITK.Wrap.Wrap;
             wrap.Add(posTabBar);
 
-            var desc = new UITK.Label("<size=12>Override settings for each position. Settings apply automatically when you play that position.<br><color=red>Note:DashFall binds have been moved to its own UI menu</color></size>");
+            var desc = new UITK.Label("<size=12>Override settings for each position. Settings apply automatically when you play that position.</size>");
             desc.style.marginBottom = 12;
             desc.style.whiteSpace = UITK.WhiteSpace.Normal;
             MakeReadable(desc);
@@ -1177,8 +1166,13 @@ namespace PoncePuck.Keybinds
             _positionTabs.Clear();
             _positionContents.Clear();
 
-            foreach (var pos in new[] { HockeyPosition.LeftWing, HockeyPosition.Center, HockeyPosition.RightWing, 
-                                        HockeyPosition.LeftDefense, HockeyPosition.RightDefense, HockeyPosition.Goalie })
+            var positionOrder = new[] {
+                HockeyPosition.LeftWing, HockeyPosition.Center, HockeyPosition.RightWing,
+                HockeyPosition.LeftDefense, HockeyPosition.RightDefense, HockeyPosition.Goalie,
+                HockeyPosition.Spectator
+            };
+
+            foreach (var pos in positionOrder)
             {
                 var tab = MakePositionTab(pos);
                 _positionTabs[pos] = tab;
@@ -1189,8 +1183,7 @@ namespace PoncePuck.Keybinds
             wrap.Add(_posSettingRowsRoot);
 
             // Create content containers for each position
-            foreach (var pos in new[] { HockeyPosition.LeftWing, HockeyPosition.Center, HockeyPosition.RightWing, 
-                                        HockeyPosition.LeftDefense, HockeyPosition.RightDefense, HockeyPosition.Goalie })
+            foreach (var pos in positionOrder)
             {
                 var content = CreatePositionContent(pos);
                 _positionContents[pos] = content;
@@ -1231,6 +1224,7 @@ namespace PoncePuck.Keybinds
                 case HockeyPosition.LeftDefense: return "Left Defense";
                 case HockeyPosition.RightDefense: return "Right Defense";
                 case HockeyPosition.Goalie: return "Goalie";
+                case HockeyPosition.Spectator: return "Spectator";
                 default: return "?";
             }
         }
@@ -1317,8 +1311,30 @@ namespace PoncePuck.Keybinds
                 case HockeyPosition.LeftDefense: return new Color(0.85f, 0.5f, 0.85f); // Purple
                 case HockeyPosition.RightDefense: return new Color(0.95f, 0.4f, 0.4f); // Red
                 case HockeyPosition.Goalie: return new Color(1f, 0.88f, 0.3f);        // Gold
+                case HockeyPosition.Spectator: return new Color(0.7f, 0.7f, 0.75f);   // Light grey
                 default: return Color.white;
             }
+        }
+
+        // Handedness / Stick Sensitivity / Camera Angle don't meaningfully apply
+        // while spectating, so hide them from the Spectator tab.
+        private static bool IsSettingAllowedFor(HockeyPosition pos, PositionSettingType st)
+        {
+            if (pos == HockeyPosition.Spectator)
+            {
+                return st != PositionSettingType.Handedness
+                    && st != PositionSettingType.StickSensitivity
+                    && st != PositionSettingType.CameraAngle;
+            }
+            return true;
+        }
+
+        private static List<string> GetSettingChoicesFor(HockeyPosition pos)
+        {
+            if (pos != HockeyPosition.Spectator) return SettingChoices;
+            return SettingChoices
+                .Where(name => IsSettingAllowedFor(pos, StringToSettingType(name)))
+                .ToList();
         }
 
         private PositionSettingType? GetFirstAvailableSettingType(HockeyPosition pos)
@@ -1338,15 +1354,16 @@ namespace PoncePuck.Keybinds
                 PositionSettingType.MinimapVerticalPosition,
                 PositionSettingType.MinimapScale
             };
-            
+
             foreach (var settingType in allTypes)
             {
-                bool alreadyExists = _posSettingRows.Any(r => r.position == pos && 
+                if (!IsSettingAllowedFor(pos, settingType)) continue;
+                bool alreadyExists = _posSettingRows.Any(r => r.position == pos &&
                     StringToSettingType(r.settingDropdown?.value ?? "") == settingType);
                 if (!alreadyExists)
                     return settingType;
             }
-            
+
             return null; // All types already used
         }
 
@@ -1363,8 +1380,8 @@ namespace PoncePuck.Keybinds
                 case PositionSettingType.ChatScale: return "1";
                 case PositionSettingType.MinimapOpacity: return "1";
                 case PositionSettingType.MinimapBackgroundOpacity: return "0.5";
-                case PositionSettingType.MinimapHorizontalPosition: return "0.5";
-                case PositionSettingType.MinimapVerticalPosition: return "0.5";
+                case PositionSettingType.MinimapHorizontalPosition: return "100";
+                case PositionSettingType.MinimapVerticalPosition: return "0";
                 case PositionSettingType.MinimapScale: return "1";
                 default: return "90";
             }
@@ -1416,7 +1433,7 @@ namespace PoncePuck.Keybinds
 
             // Setting type dropdown
             var settingDropdown = new UITK.DropdownField();
-            settingDropdown.choices = SettingChoices;
+            settingDropdown.choices = GetSettingChoicesFor(position);
             settingDropdown.value = SettingTypeToString(settingType);
             settingDropdown.style.minWidth = 300;
             settingDropdown.style.marginRight = GAP;
@@ -1659,12 +1676,14 @@ namespace PoncePuck.Keybinds
 
                 case PositionSettingType.MinimapHorizontalPosition:
                 case PositionSettingType.MinimapVerticalPosition:
-                    // Position sliders: 0-1 range
-                    float posVal = 0.5f;
+                    // Position sliders: game uses 0-100 (percent of screen);
+                    // defaults are 100 (right edge) for H and 0 (top) for V.
+                    float posDefault = (settingType == PositionSettingType.MinimapHorizontalPosition) ? 100f : 0f;
+                    float posVal = posDefault;
                     float.TryParse(value, out posVal);
-                    posVal = Mathf.Clamp(posVal, 0f, 1f);
+                    posVal = Mathf.Clamp(posVal, 0f, 100f);
 
-                    var posSlider = new UITK.Slider(0f, 1f) { value = posVal };
+                    var posSlider = new UITK.Slider(0f, 100f) { value = posVal };
                     posSlider.style.flexGrow = 1;
                     posSlider.style.minWidth = 150;
                     posSlider.style.height = 20;
@@ -1672,7 +1691,7 @@ namespace PoncePuck.Keybinds
                     model.valueContainer.Add(posSlider);
                     model.valueSlider = posSlider;
 
-                    var posField = new UITK.TextField { value = posVal.ToString("0.00") };
+                    var posField = new UITK.TextField { value = posVal.ToString("0") };
                     posField.style.minWidth = 50;
                     posField.style.maxWidth = 50;
                     posField.style.marginLeft = 8;
@@ -1681,10 +1700,10 @@ namespace PoncePuck.Keybinds
                     model.valueContainer.Add(posField);
                     model.valueField = posField;
 
-                    posSlider.RegisterValueChangedCallback(evt => posField.SetValueWithoutNotify(evt.newValue.ToString("0.00")));
+                    posSlider.RegisterValueChangedCallback(evt => posField.SetValueWithoutNotify(evt.newValue.ToString("0")));
                     posField.RegisterValueChangedCallback(evt => {
                         if (float.TryParse(evt.newValue, out float v))
-                            posSlider.SetValueWithoutNotify(Mathf.Clamp(v, 0f, 1f));
+                            posSlider.SetValueWithoutNotify(Mathf.Clamp(v, 0f, 100f));
                     });
                     break;
             }
@@ -1708,6 +1727,7 @@ namespace PoncePuck.Keybinds
                 case HockeyPosition.LeftDefense: return "Left Defense";
                 case HockeyPosition.RightDefense: return "Right Defense";
                 case HockeyPosition.Goalie: return "Goalie";
+                case HockeyPosition.Spectator: return "Spectator";
                 default: return "Goalie";
             }
         }
@@ -1722,6 +1742,7 @@ namespace PoncePuck.Keybinds
                 case "Left Defense": return HockeyPosition.LeftDefense;
                 case "Right Defense": return HockeyPosition.RightDefense;
                 case "Goalie": return HockeyPosition.Goalie;
+                case "Spectator": return HockeyPosition.Spectator;
                 default: return HockeyPosition.None;
             }
         }

@@ -2,6 +2,7 @@
 bin/
 obj/
 *.user
+*.lscache
 
 # Game DLLs (copy from Puck_Data/Managed locally; do not commit)
 libs/

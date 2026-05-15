@@ -8,37 +8,6 @@
 	"title"		"PlayerQoL"
 	"description"		"A comprehensive client-side mod for Puck that enhances chat, player management, and position-based settings!
 
-[h1]Version 3.1.0 - Dev console, base-game UX patches, server-browser revamp[/h1]
-
-[h2]In-Game Dev Console[/h2]
-[list]
-[*][b]Toggle in Settings[/b] - Enable then press the backtick (`) key anywhere in-game to open
-[*][b]Movable & Resizable Window[/b] - Drag the title bar to move; drag the corner grip to resize. Position/size persist
-[*][b]Live Log Feed[/b] - Captures all Unity logs in real time, color-coded by level
-[*][b]Filters & Search[/b] - INFO/WARN/ERROR toggle buttons + live substring search
-[*][b]Real Commands[/b] - set/get/toggle any config field, fov, players, save/reload, version, fps, time, chat, /slash-cmds, history with Up/Down
-[/list]
-
-[h2]Base-Game UX Fixes[/h2]
-[list]
-[*][b]ESC Closes Menus[/b] - Settings, Mods, Server Browser, NewServer, Identity, Appearance, PlayerMenu, Friends, Play all close on ESC like the pause menu
-[*][b]Open Chat Anywhere[/b] - Type with Y/U during team/position select, in the lobby, or with no role assigned (vanilla blocked these)
-[*][b]Selectable Chat Text[/b] - Drag-highlight chat messages and left- or right-click any line to copy it to your clipboard
-[/list]
-
-[h2]Server Browser Revamp[/h2]
-[list]
-[*][b]Inline Filters[/b] - The FILTERS popup is gone; search, max-ping, and visibility toggles live in a clean two-column row at the bottom of the browser
-[*][b]Refresh + New Server[/b] - Sit on the same row as the filters, styled to match the server-list rows
-[/list]
-
-[h2]IFealLeftOut Inigration![/h2]
-[list]
-[*][b]Use F1 to view the other side of the ice as goalie so you dont fall a sleep on the job!
-[*][b]Use F2 to reset the mod
-[*][b]Major perf fix[/b] - eliminated per-tick scene scans that tanked FPS once multiple players were on the server
-[/list]
-
 [h2]Major Performance Improvements[/h2]
 [list]
 [*][b]Event-Driven Architecture[/b] - Replaced constant polling with game event hooks
@@ -103,6 +72,6 @@
 
 	Support me here if you want!
 https://buymeacoffee.com/amikiir"
-	"changenote"		"3.1.0 - Added in-game dev console (backtick to toggle, movable/resizable, real commands), ESC closes secondary base-game menus, chat opens in any phase / any role, chat lines selectable + click-to-copy, server browser filters revamped to inline two-column layout, IFeelLeftOut FPS regression fixed, Puck release compatibility."
+	"changenote"		"3.1.2 - Removed IFeelLeftOut goalie wide-view camera and all base-game UI patches (ESC menu close, chat-in-any-phase, chat drag-select / click-to-copy, hide-inactive-chat, server-browser inline filters, spectator minimap). Fixed per-position Handedness override (was silently failing because the game's API takes a PlayerHandedness enum, not a string). Fixed per-position Minimap Horizontal/Vertical Position overrides (sliders now use the game's 0-100 percent range with correct defaults; the 0-1 range never moved the minimap). Added Spectator tab for per-position overrides."
 	"tags"          "B232, Mod, Client-sided"
 }

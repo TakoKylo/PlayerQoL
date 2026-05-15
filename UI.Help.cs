@@ -156,6 +156,95 @@ namespace PoncePuck.Keybinds
             }
         }
 
+        // ─────────────── TRL-style row builders ────────────────────────────
+        // PPI used to render every settings row as a 50px dark "card" with
+        // big padding. TRL uses a flatter look: a flex row with the label
+        // on the left and the control on the right, no card background, and
+        // matching dark-fill / gray-border styling on the controls.
+        // Make*Row signatures are unchanged so callers don't need updates.
+
+        // Compact row matching TRL's CreateConfigurationRow: label flush-left,
+        // control flush-right, no background.
+        private static UITK.VisualElement MakeConfigRow()
+        {
+            return new UITK.VisualElement
+            {
+                style =
+                {
+                    flexDirection  = FlexDirection.Row,
+                    alignItems     = Align.Center,
+                    justifyContent = Justify.SpaceBetween,
+                    marginTop      = 4,
+                    marginBottom   = 4,
+                }
+            };
+        }
+
+        // Settings-tab section title — bold, 20fs white, tight margins.
+        // Matches TRL's PlayerQoLSection.Header pattern.
+        private void AddSectionHeader(UITK.VisualElement parent, string text, bool topGap = true)
+        {
+            var h = new UITK.Label("<b>" + text + "</b>"); MakeReadable(h);
+            h.style.fontSize = 20;
+            h.style.unityFontStyleAndWeight = FontStyle.Normal;
+            h.style.color = Color.white;
+            h.style.marginTop = topGap ? 12 : 4;
+            h.style.marginBottom = 8;
+            parent.Add(h);
+        }
+
+        // Small explanatory text under a section header (TRL style).
+        private void AddSectionNote(UITK.VisualElement parent, string text)
+        {
+            var n = new UITK.Label(text); MakeReadable(n);
+            n.style.fontSize = 13;
+            n.style.color = new StyleColor(new Color(0.7f, 0.7f, 0.7f));
+            n.style.whiteSpace = UITK.WhiteSpace.Normal;
+            n.style.marginBottom = 8;
+            parent.Add(n);
+        }
+
+        // 1-px medium-gray divider between sections.
+        private void AddSectionSeparator(UITK.VisualElement parent)
+        {
+            var sep = new UITK.VisualElement();
+            sep.style.height = 1;
+            sep.style.backgroundColor = new StyleColor(new Color(0.4f, 0.4f, 0.4f));
+            sep.style.marginTop = 12;
+            sep.style.marginBottom = 12;
+            parent.Add(sep);
+        }
+
+        // Dark-gray pill button with white text and white-on-black hover —
+        // mirrors TRL's StyleConfigButton so dialog buttons (CLEAR ALL etc.)
+        // match the toggles visually.
+        internal static void StyleConfigButton(UITK.Button button)
+        {
+            if (button == null) return;
+            button.style.backgroundColor = new StyleColor(new Color(0.25f, 0.25f, 0.25f));
+            button.style.color = Color.white;
+            button.style.unityTextAlign = TextAnchor.MiddleCenter;
+            button.style.fontSize = 16;
+            button.style.paddingTop = 6;
+            button.style.paddingBottom = 6;
+            button.style.paddingLeft = 14;
+            button.style.paddingRight = 14;
+            button.style.borderTopWidth = 0;
+            button.style.borderBottomWidth = 0;
+            button.style.borderLeftWidth = 0;
+            button.style.borderRightWidth = 0;
+            button.RegisterCallback<UITK.MouseEnterEvent>(_ =>
+            {
+                button.style.backgroundColor = Color.white;
+                button.style.color = Color.black;
+            });
+            button.RegisterCallback<UITK.MouseLeaveEvent>(_ =>
+            {
+                button.style.backgroundColor = new StyleColor(new Color(0.25f, 0.25f, 0.25f));
+                button.style.color = Color.white;
+            });
+        }
+
         private UITK.VisualElement MakeToggleRow(string label, bool start, System.Action<bool> onChange)
         {
             var row = new UITK.VisualElement
@@ -180,9 +269,31 @@ namespace PoncePuck.Keybinds
             spacer.style.flexGrow = 1;
             row.Add(spacer);
 
-            var t = new UITK.Toggle { value = start }; row.Add(t);
+            var t = new UITK.Toggle { value = start };
+            StyleConfigCheckbox(t);
+            row.Add(t);
             t.RegisterValueChangedCallback(ev => onChange?.Invoke(ev.newValue));
             return row;
+        }
+
+        // Recolor the checkbox frame to the TRL palette: dark fill + medium-gray
+        // border. The default Unity USS renders a light box that disappears
+        // against this panel's dark rows; this matches the look TRL uses so
+        // mod-injected toggles (e.g. the per-server "MODS REQUIRED" popup
+        // checkbox) blend with PPI's settings page.
+        internal static void StyleConfigCheckbox(UITK.Toggle toggle)
+        {
+            if (toggle == null) return;
+            toggle.RegisterCallback<UITK.AttachToPanelEvent>(_ =>
+            {
+                var input = toggle.Q(className: "unity-toggle__input");
+                if (input == null) return;
+                input.style.backgroundColor   = new StyleColor(new Color(0.15f, 0.15f, 0.15f));
+                input.style.borderTopColor    = new StyleColor(new Color(0.4f, 0.4f, 0.4f));
+                input.style.borderBottomColor = new StyleColor(new Color(0.4f, 0.4f, 0.4f));
+                input.style.borderLeftColor   = new StyleColor(new Color(0.4f, 0.4f, 0.4f));
+                input.style.borderRightColor  = new StyleColor(new Color(0.4f, 0.4f, 0.4f));
+            });
         }
 
         private UITK.VisualElement MakeDropdownRow(string label, string currentValue, System.Collections.Generic.List<string> options, System.Action<string> onChange)
@@ -430,7 +541,7 @@ namespace PoncePuck.Keybinds
             // ARENA VISUALS section
             var arenaLoaderTitle = new UITK.Label("VISUALS"); MakeReadable(arenaLoaderTitle);
             arenaLoaderTitle.style.unityFontStyleAndWeight = FontStyle.Normal;
-            arenaLoaderTitle.style.fontSize = 24; 
+            arenaLoaderTitle.style.fontSize = 24;
             arenaLoaderTitle.style.marginBottom = 8;
             arenaLoaderTitle.style.marginTop = 8;
             _settingsSectionVE.Add(arenaLoaderTitle);
@@ -590,6 +701,109 @@ namespace PoncePuck.Keybinds
                     }
                     */
 
+                    // Trusted Servers — management surface for the per-server
+                    // "MODS REQUIRED" popup suppression. The opt-in toggle is
+                    // injected into the vanilla popup itself
+                    // (MissingModsPopupSuppression.cs); this lists every
+                    // trusted endpoint with a per-row Untrust button plus a
+                    // wipe-all action.
+                    {
+                        AddSectionSeparator(_settingsSectionVE);
+                        AddSectionHeader(_settingsSectionVE, "Trusted Servers");
+                        AddSectionNote(_settingsSectionVE,
+                            "Servers you ticked \"Don't show this popup again\" on inside the " +
+                            "MODS REQUIRED popup. Trust is per-server; the popup returns automatically " +
+                            "if the server's required mod set changes.");
+
+                        // Container the rebuild repaints into. Re-rendering
+                        // the whole list on each mutation keeps the per-row
+                        // closures simple — no need to track row VisualElements.
+                        var listContainer = new UITK.VisualElement();
+                        _settingsSectionVE.Add(listContainer);
+
+                        System.Action rebuildList = null;
+                        rebuildList = () =>
+                        {
+                            listContainer.Clear();
+                            var keys = MissingModsPopupSuppression.SnapshotKeys();
+
+                            if (keys.Count == 0)
+                            {
+                                var empty = new UITK.Label("No trusted servers yet.");
+                                MakeReadable(empty);
+                                empty.style.fontSize = 14;
+                                empty.style.color = new StyleColor(new Color(0.65f, 0.65f, 0.65f));
+                                empty.style.marginTop = 4;
+                                empty.style.marginBottom = 4;
+                                listContainer.Add(empty);
+                                return;
+                            }
+
+                            foreach (var key in keys)
+                            {
+                                var row = MakeConfigRow();
+
+                                int modCount = MissingModsPopupSuppression.CountModsFor(key);
+                                string cachedName = MissingModsPopupSuppression.GetCachedServerName(key);
+                                bool hasName = !string.IsNullOrEmpty(cachedName);
+
+                                var stack = new UITK.VisualElement();
+                                stack.style.flexDirection = FlexDirection.Column;
+                                stack.style.flexGrow = 1;
+
+                                // Primary line: friendly name if we've seen the server in
+                                // the browser this session, otherwise raw ip:port.
+                                var primary = new UITK.Label(hasName ? cachedName : key);
+                                MakeReadable(primary);
+                                primary.style.fontSize = 16;
+                                primary.style.color = Color.white;
+                                stack.Add(primary);
+
+                                // Subtitle: when we have a friendly name, append the
+                                // endpoint so the user can still identify which server
+                                // shares that name. Either way, show the mod-count.
+                                string subText = hasName
+                                    ? key + " — " + modCount + " mod" + (modCount == 1 ? "" : "s") + " trusted"
+                                    : modCount + " mod" + (modCount == 1 ? "" : "s") + " trusted";
+                                var sub = new UITK.Label(subText); MakeReadable(sub);
+                                sub.style.fontSize = 11;
+                                sub.style.color = new StyleColor(new Color(0.65f, 0.65f, 0.65f));
+                                sub.style.marginTop = 0;
+                                stack.Add(sub);
+
+                                row.Add(stack);
+
+                                var capturedKey = key;
+                                var untrustBtn = new UITK.Button(() =>
+                                {
+                                    MissingModsPopupSuppression.Remove(capturedKey);
+                                    rebuildList();
+                                })
+                                { text = "Untrust" };
+                                StyleConfigButton(untrustBtn);
+                                untrustBtn.style.marginLeft = 8;
+                                row.Add(untrustBtn);
+
+                                listContainer.Add(row);
+                            }
+
+                            // Wipe-all action flushed right under the list.
+                            var clearAllRow = MakeConfigRow();
+                            clearAllRow.style.justifyContent = Justify.FlexEnd;
+                            clearAllRow.style.marginTop = 8;
+                            var clearBtn = new UITK.Button(() =>
+                            {
+                                MissingModsPopupSuppression.RemoveAll();
+                                rebuildList();
+                            })
+                            { text = "Untrust all servers" };
+                            StyleConfigButton(clearBtn);
+                            clearAllRow.Add(clearBtn);
+                            listContainer.Add(clearAllRow);
+                        };
+                        rebuildList();
+                    }
+
                     // Admin Settings Section
                     {
                         var adminHeader = new UITK.Label("ADMIN");
@@ -611,7 +825,7 @@ namespace PoncePuck.Keybinds
                         // Debug logging toggle
                         var debugTitle = new UITK.Label("DEBUG"); MakeReadable(debugTitle);
                         debugTitle.style.unityFontStyleAndWeight = FontStyle.Normal;
-                        debugTitle.style.fontSize = 24; 
+                        debugTitle.style.fontSize = 24;
                         debugTitle.style.marginBottom = 8;
                         debugTitle.style.marginTop = 16;
                         _settingsSectionVE.Add(debugTitle);
@@ -622,14 +836,6 @@ namespace PoncePuck.Keybinds
                             SaveConfigsAndRefresh();
                         });
                         _settingsSectionVE.Add(debugToggleRow);
-
-                        var devConsoleRow = MakeToggleRow("DEV CONSOLE (`)", _cmd.enableDevConsole, on =>
-                        {
-                            _cmd.enableDevConsole = on;
-                            SaveConfigsAndRefresh();
-                            if (!on) DevConsole.Instance?.Close();
-                        });
-                        _settingsSectionVE.Add(devConsoleRow);
 
                         // Initialize panel color values (only if panel color controls exist)
                         {

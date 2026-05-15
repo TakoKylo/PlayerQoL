@@ -282,42 +282,88 @@ namespace PoncePuck.Keybinds
                     if (!string.IsNullOrEmpty(csv)) _cmd.prefills.Add(text + "|" + csv);
                 }
 
-                // Save position settings from rows
+                // Save position settings from rows.
+                //
+                // Value capture is defensive on purpose: numeric rows (slider + field
+                // pair) read BOTH widgets and keep whichever parses as a float. A
+                // historical bug let Minimap Vertical save as empty because the slider
+                // sometimes reported 0 / NaN while the field showed the typed value
+                // — the empty-string check below then dropped the entry entirely.
                 _cmd.positionSettings.Clear();
                 Debug.Log($"[PPKB] Saving position settings - row count: {_posSettingRows.Count}");
+                var inv = System.Globalization.CultureInfo.InvariantCulture;
                 foreach (var row in _posSettingRows.ToList())
                 {
                     var pos = row.position;
-                    var st = StringToSettingType(row.settingDropdown?.value ?? "FOV");
-                    
-                    // Get value based on setting type
+                    var dropdownDisplay = row.settingDropdown?.value ?? "FOV";
+                    var st = StringToSettingType(dropdownDisplay);
+
                     string val = "";
                     if (row.valueDropdown != null)
                     {
-                        val = row.valueDropdown.value;
-                        Debug.Log($"[PPKB] Row dropdown value: {val}");
+                        // Enum-style controls (Handedness): dropdown carries the value verbatim.
+                        val = row.valueDropdown.value ?? "";
                     }
-                    else if (row.valueSlider != null)
+                    else
                     {
-                        val = row.valueSlider.value.ToString();
-                        Debug.Log($"[PPKB] Row slider value: {val}");
+                        // Numeric controls: read slider value, but fall back to the text
+                        // field if the slider reports a value that diverges from what
+                        // the user sees in the field (this happens when the field's
+                        // typed value parsed but the slider's SetValueWithoutNotify
+                        // didn't take, or vice-versa). Use the field whenever it parses
+                        // and differs from the slider's stringified value.
+                        float? sliderVal = null;
+                        string sliderStr = null;
+                        if (row.valueSlider != null)
+                        {
+                            sliderVal = row.valueSlider.value;
+                            sliderStr = sliderVal.Value.ToString(inv);
+                        }
+                        string fieldStr = row.valueField?.value;
+                        bool fieldParses = !string.IsNullOrEmpty(fieldStr)
+                            && float.TryParse(fieldStr, System.Globalization.NumberStyles.Float, inv, out float fieldF);
+
+                        if (sliderVal.HasValue && (!fieldParses || sliderStr == fieldStr))
+                        {
+                            val = sliderStr;
+                        }
+                        else if (fieldParses)
+                        {
+                            val = fieldStr;
+                        }
+                        else if (sliderVal.HasValue)
+                        {
+                            val = sliderStr;
+                        }
+                        else if (!string.IsNullOrEmpty(fieldStr))
+                        {
+                            val = fieldStr;
+                        }
                     }
-                    else if (row.valueField != null)
-                    {
-                        val = row.valueField.value;
-                        Debug.Log($"[PPKB] Row field value: {val}");
-                    }
-                    
-                    Debug.Log($"[PPKB] Processing row: pos={pos}, type={st}, val={val}");
+
+                    Debug.Log($"[PPKB] Processing row: pos={pos}, dropdown=\"{dropdownDisplay}\", type={st}, " +
+                              $"slider={(row.valueSlider != null ? row.valueSlider.value.ToString(inv) : "null")}, " +
+                              $"field=\"{row.valueField?.value ?? "null"}\", picked=\"{val}\"");
+
+                    // Allow "0" explicitly — `string.IsNullOrEmpty("0")` is already false,
+                    // but the comment is here because Minimap Vertical's default value
+                    // IS "0" (top of screen) and we want it to round-trip.
                     if (pos != HockeyPosition.None && !string.IsNullOrEmpty(val))
                     {
-                        _cmd.positionSettings.Add(new PositionSettingEntry 
-                        { 
-                            position = pos, 
-                            settingType = st, 
-                            value = val 
+                        _cmd.positionSettings.Add(new PositionSettingEntry
+                        {
+                            position = pos,
+                            settingType = st,
+                            value = val
                         });
                         Debug.Log($"[PPKB] Added position setting: {pos} {st} = {val}");
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[PPKB] DROPPED row: pos={pos}, type={st}, val=\"{val}\" " +
+                                         $"(slider={row.valueSlider?.value.ToString(inv) ?? "null"}, " +
+                                         $"field=\"{row.valueField?.value ?? "null"}\", " +
+                                         $"dropdown=\"{row.valueDropdown?.value ?? "null"}\")");
                     }
                 }
                 Debug.Log($"[PPKB] Total position settings to save: {_cmd.positionSettings.Count}");

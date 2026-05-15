@@ -33,7 +33,8 @@ namespace PoncePuck.Keybinds
         private float _baseFOV = 90f, _baseCameraAngle = 30f, _baseStickSens = 0.2f, _baseLookSens = 0.2f;
         private float _baseChatOpacity = 1f, _baseChatScale = 1f;
         private float _baseMinimapOpacity = 1f, _baseMinimapBgOpacity = 0.5f;
-        private float _baseMinimapHPos = 0.5f, _baseMinimapVPos = 0.5f, _baseMinimapScale = 1f;
+        // H position default 100 = right edge, V default 0 = top; values are percent of screen, not 0-1.
+        private float _baseMinimapHPos = 100f, _baseMinimapVPos = 0f, _baseMinimapScale = 1f;
         private string _baseHandedness = "Right";
         
         // Track which settings are currently overridden
@@ -185,6 +186,19 @@ namespace PoncePuck.Keybinds
             position = HockeyPosition.None;
             try
             {
+                // Team-first check: PlayerTeam.Spectator means the user is spectating,
+                // even if they previously had a PlayerPosition assigned.
+                var piTeam = _tPlayer.GetProperty("Team", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (piTeam != null)
+                {
+                    var teamVal = piTeam.GetValue(p, null);
+                    if (teamVal != null && string.Equals(teamVal.ToString(), "Spectator", StringComparison.OrdinalIgnoreCase))
+                    {
+                        position = HockeyPosition.Spectator;
+                        return true;
+                    }
+                }
+
                 // First, try to read PlayerPosition.Name for specific position (LW, C, RW, LD, RD, G)
                 var fiPlayerPosition = _tPlayer.GetField("PlayerPosition", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (fiPlayerPosition != null)
@@ -817,33 +831,41 @@ namespace PoncePuck.Keybinds
         {
             try
             {
-                // Try PlayerPrefs first
-                if (PlayerPrefs.HasKey("handedness"))
-                {
-                    string prefsHand = PlayerPrefs.GetString("handedness");
-                    Debug.Log($"[PPKB] Read Handedness from PlayerPrefs: {prefsHand}");
-                    if (!string.IsNullOrEmpty(prefsHand)) return prefsHand;
-                }
-                
+                // Read SettingsManager.Handedness (PlayerHandedness enum: None/Left/Right).
+                // The game persists this via SaveManager.SetEnum -> PlayerPrefs.SetInt,
+                // so reading PlayerPrefs.GetString would always return "".
                 var tSettingsManager = GetSettingsManagerType();
-                var instance = GetSettingsManagerInstance(tSettingsManager);
-                if (instance != null && tSettingsManager != null)
+                var fi = tSettingsManager?.GetField("Handedness", BindingFlags.Static | BindingFlags.Public);
+                if (fi != null)
                 {
-                    var prop = tSettingsManager.GetProperty("Handedness", BindingFlags.Static | BindingFlags.Public);
-                    if (prop != null)
+                    var val = fi.GetValue(null);
+                    if (val != null)
                     {
-                        var val = prop.GetValue(null);
-                        if (val != null) 
-                        {
-                            string hand = val.ToString();
-                            Debug.Log($"[PPKB] Read Handedness from SettingsManager: {hand}");
-                            return hand;
-                        }
+                        string hand = val.ToString();
+                        Debug.Log($"[PPKB] Read Handedness from SettingsManager: {hand}");
+                        return hand;
                     }
                 }
             }
             catch (Exception ex) { DebugLog($"[PPKB] GetCurrentHandedness error: {ex.Message}"); }
             return "Right";
+        }
+
+        // Resolve PlayerHandedness enum type via the UpdateHandedness method signature.
+        private static Type _cachedHandednessEnumType;
+        private Type GetPlayerHandednessType()
+        {
+            if (_cachedHandednessEnumType != null) return _cachedHandednessEnumType;
+            try
+            {
+                var tSettingsManager = GetSettingsManagerType();
+                var mi = tSettingsManager?.GetMethod("UpdateHandedness", BindingFlags.Static | BindingFlags.Public);
+                var ps = mi?.GetParameters();
+                if (ps != null && ps.Length == 1 && ps[0].ParameterType.IsEnum)
+                    _cachedHandednessEnumType = ps[0].ParameterType;
+            }
+            catch { }
+            return _cachedHandednessEnumType;
         }
         
         private float GetCurrentStickSensitivity()
@@ -1024,9 +1046,9 @@ namespace PoncePuck.Keybinds
                 }
             }
             catch (Exception ex) { DebugLog($"[PPKB] GetCurrentMinimapHorizontalPosition error: {ex.Message}"); }
-            return 0.5f;
+            return 100f;
         }
-        
+
         private float GetCurrentMinimapVerticalPosition()
         {
             try
@@ -1047,7 +1069,7 @@ namespace PoncePuck.Keybinds
                 }
             }
             catch (Exception ex) { DebugLog($"[PPKB] GetCurrentMinimapVerticalPosition error: {ex.Message}"); }
-            return 0.5f;
+            return 0f;
         }
         
         private float GetCurrentMinimapScale()
@@ -1132,22 +1154,29 @@ namespace PoncePuck.Keybinds
         {
             try
             {
-                // Normalize handedness value to uppercase
-                string normalizedHand = handedness?.Trim().ToUpper();
-                if (normalizedHand != "LEFT" && normalizedHand != "RIGHT")
+                // The game's UpdateHandedness takes a PlayerHandedness enum, not a string —
+                // boxing a string into the object[] caused a silent reflection failure.
+                var tSettingsManager = GetSettingsManagerType();
+                if (tSettingsManager == null) return;
+
+                var tHand = GetPlayerHandednessType();
+                if (tHand == null)
                 {
-                    normalizedHand = normalizedHand?.StartsWith("L", StringComparison.OrdinalIgnoreCase) == true ? "LEFT" : "RIGHT";
+                    Debug.LogWarning("[PPKB] PlayerHandedness enum not found");
+                    return;
                 }
 
-                var tSettingsManager = GetSettingsManagerType();
-                var instance = GetSettingsManagerInstance(tSettingsManager);
-                
-                if (instance != null && tSettingsManager != null)
-                {
-                    var miUpdate = tSettingsManager.GetMethod("UpdateHandedness", BindingFlags.Static | BindingFlags.Public);
-                    miUpdate?.Invoke(null, new object[] { normalizedHand });
-                    Debug.Log($"[PPKB] Applied handedness {normalizedHand} for {position}");
-                }
+                string normalized = handedness?.Trim() ?? "";
+                bool wantLeft = normalized.StartsWith("L", StringComparison.OrdinalIgnoreCase);
+                string enumName = wantLeft ? "Left" : "Right";
+
+                object enumValue;
+                try { enumValue = Enum.Parse(tHand, enumName, true); }
+                catch { enumValue = Enum.Parse(tHand, "Right", true); }
+
+                var miUpdate = tSettingsManager.GetMethod("UpdateHandedness", BindingFlags.Static | BindingFlags.Public);
+                miUpdate?.Invoke(null, new object[] { enumValue });
+                Debug.Log($"[PPKB] Applied handedness {enumName} for {position}");
             }
             catch (Exception ex)
             {

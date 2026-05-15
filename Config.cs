@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace PoncePuck.Keybinds
 {
-    // Position enum for the 6 hockey positions
+    // Position enum for the 6 hockey positions (plus Spectator for streamers / setup)
     public enum HockeyPosition
     {
         None = 0,
@@ -12,7 +12,8 @@ namespace PoncePuck.Keybinds
         RightWing = 3,     // RW
         LeftDefense = 4,   // LD
         RightDefense = 5,  // RD
-        Goalie = 6         // G
+        Goalie = 6,        // G
+        Spectator = 7      // SPEC
     }
 
     // Setting types that can be overridden per position
@@ -57,10 +58,20 @@ namespace PoncePuck.Keybinds
         // Position-specific settings stored as strings: "POSITION:SETTINGTYPE:VALUE"
         // e.g., "RW:FOV:90", "G:Handedness:Left"
         public List<string> positionSettingsRaw = new List<string>();
-        
+
         // Runtime-only parsed list (not serialized)
         [NonSerialized]
         public List<PositionSettingEntry> positionSettings = new List<PositionSettingEntry>();
+
+        // Trusted-server mod fingerprints for the per-server "MODS REQUIRED"
+        // popup suppression (MissingModsPopupSuppression.cs). On disk as a flat
+        // List<string> in "ip:port|sortedCSV-of-modIds" form because JsonUtility
+        // can't serialize Dictionary<string,string> directly. ParseTrustedServerMods /
+        // SerializeTrustedServerMods bridge to/from the runtime dict.
+        public List<string> trustedServerModsRaw = new List<string>();
+
+        [NonSerialized]
+        public Dictionary<string, string> trustedServerMods = new Dictionary<string, string>();
         
         // Call this after loading to parse raw strings into entries
         public void ParsePositionSettings()
@@ -95,9 +106,49 @@ namespace PoncePuck.Keybinds
                     var typeStr = SettingTypeToString(entry.settingType);
                     positionSettingsRaw.Add($"{posStr}:{typeStr}:{entry.value}");
                 }
+                else
+                {
+                    // Surfaces silent drops — useful when an entry was added to
+                    // positionSettings but lost on the way to disk (the classic
+                    // Minimap Vertical save bug).
+                    UnityEngine.Debug.LogWarning(
+                        $"[PPKB] SerializePositionSettings DROPPED entry: pos={entry.position}, " +
+                        $"type={entry.settingType}, value=\"{entry.value ?? "<null>"}\"");
+                }
             }
         }
         
+        // Rebuild the runtime trustedServerMods dict from the on-disk raw list.
+        // Format per entry: "ip:port|sortedCSV-of-modIds". The first '|' splits
+        // key from value so the mod-id CSV can contain anything (no further
+        // splitting on '|' inside the value, though sorted IDs don't use it).
+        public void ParseTrustedServerMods()
+        {
+            trustedServerMods = new Dictionary<string, string>();
+            if (trustedServerModsRaw == null) return;
+            foreach (var raw in trustedServerModsRaw)
+            {
+                if (string.IsNullOrEmpty(raw)) continue;
+                int sep = raw.IndexOf('|');
+                if (sep <= 0) continue;
+                string key = raw.Substring(0, sep);
+                string value = (sep + 1 < raw.Length) ? raw.Substring(sep + 1) : "";
+                if (!string.IsNullOrEmpty(key))
+                    trustedServerMods[key] = value;
+            }
+        }
+
+        public void SerializeTrustedServerMods()
+        {
+            trustedServerModsRaw = new List<string>();
+            if (trustedServerMods == null) return;
+            foreach (var kv in trustedServerMods)
+            {
+                if (string.IsNullOrEmpty(kv.Key)) continue;
+                trustedServerModsRaw.Add($"{kv.Key}|{kv.Value ?? ""}");
+            }
+        }
+
         private static HockeyPosition ParsePosition(string s)
         {
             switch (s.ToUpper())
@@ -108,6 +159,7 @@ namespace PoncePuck.Keybinds
                 case "LD": return HockeyPosition.LeftDefense;
                 case "RD": return HockeyPosition.RightDefense;
                 case "G": return HockeyPosition.Goalie;
+                case "SPEC": return HockeyPosition.Spectator;
                 default: return HockeyPosition.None;
             }
         }
@@ -142,6 +194,7 @@ namespace PoncePuck.Keybinds
                 case HockeyPosition.LeftDefense: return "LD";
                 case HockeyPosition.RightDefense: return "RD";
                 case HockeyPosition.Goalie: return "G";
+                case HockeyPosition.Spectator: return "SPEC";
                 default: return "NONE";
             }
         }
@@ -206,18 +259,6 @@ namespace PoncePuck.Keybinds
         
         // Debug settings
         public bool enableDebugLogging = false;  // Enable debug logging (default off)
-
-        // In-game developer console (toggle with backtick when enabled)
-        public bool enableDevConsole = false;
-        public float devConsoleX = 40f;
-        public float devConsoleY = 40f;
-        public float devConsoleW = 900f;
-        public float devConsoleH = 460f;
-
-        // IFeelLeftOut goalie wide-view camera (integrated from IFeelLeftOut by gubby)
-        public bool enableLeftOutCamera = true;          // Enable goalie wide-view camera feature
-        public string leftOutCameraToggleKey = "F1";     // Toggle key (UnityEngine.InputSystem.Key name)
-        public string leftOutCameraReloadKey = "F2";     // Reload settings key
 
         // Helper methods for position settings
         public float? GetFOVForPosition(HockeyPosition pos)
