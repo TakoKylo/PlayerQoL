@@ -209,13 +209,14 @@ namespace PoncePuck.Keybinds
                     string saved = (store != null && key != null && store.TryGetValue(key, out var s)) ? s : null;
                     var fingerprint = FingerprintModIds(required);
                     bool trusted = saved != null && saved == fingerprint;
-                    // Always log on every popup attempt — this is rare and the
-                    // info is needed to diagnose why a "trusted" server still
-                    // shows the popup.
-                    Debug.Log($"[PPKB] missingMods popup: key=\"{key ?? "<null>"}\" " +
-                              $"storeHas={(store != null && key != null && store.ContainsKey(key))} " +
-                              $"requiredCount={required?.Length ?? 0} " +
-                              $"fingerprintMatch={(saved != null ? (saved == fingerprint ? "yes" : "DIFFERS") : "no-entry")}");
+                    // Diagnostic log gated on enableDebugLogging — popups are
+                    // rare so log volume isn't bad either way, but matching the
+                    // rest of PPI's logging convention.
+                    if (KeybindRunner.Instance?.CommandConfig?.enableDebugLogging ?? false)
+                        Debug.Log($"[PPKB] missingMods popup: key=\"{key ?? "<null>"}\" " +
+                                  $"storeHas={(store != null && key != null && store.ContainsKey(key))} " +
+                                  $"requiredCount={required?.Length ?? 0} " +
+                                  $"fingerprintMatch={(saved != null ? (saved == fingerprint ? "yes" : "DIFFERS") : "no-entry")}");
                     if (!trusted) return true;
                     EmulateOkClick(required);
                     return false; // skip vanilla ShowPopup

@@ -290,7 +290,11 @@ namespace PoncePuck.Keybinds
                 // sometimes reported 0 / NaN while the field showed the typed value
                 // — the empty-string check below then dropped the entry entirely.
                 _cmd.positionSettings.Clear();
-                Debug.Log($"[PPKB] Saving position settings - row count: {_posSettingRows.Count}");
+                // Diagnostic logs gated — they spam Player.log on every panel
+                // close otherwise. The DROPPED-row warning below stays
+                // unconditional because it signals a real bug.
+                bool dbg = _cmd.enableDebugLogging;
+                if (dbg) Debug.Log($"[PPKB] Saving position settings - row count: {_posSettingRows.Count}");
                 var inv = System.Globalization.CultureInfo.InvariantCulture;
                 foreach (var row in _posSettingRows.ToList())
                 {
@@ -341,9 +345,10 @@ namespace PoncePuck.Keybinds
                         }
                     }
 
-                    Debug.Log($"[PPKB] Processing row: pos={pos}, dropdown=\"{dropdownDisplay}\", type={st}, " +
-                              $"slider={(row.valueSlider != null ? row.valueSlider.value.ToString(inv) : "null")}, " +
-                              $"field=\"{row.valueField?.value ?? "null"}\", picked=\"{val}\"");
+                    if (dbg)
+                        Debug.Log($"[PPKB] Processing row: pos={pos}, dropdown=\"{dropdownDisplay}\", type={st}, " +
+                                  $"slider={(row.valueSlider != null ? row.valueSlider.value.ToString(inv) : "null")}, " +
+                                  $"field=\"{row.valueField?.value ?? "null"}\", picked=\"{val}\"");
 
                     // Allow "0" explicitly — `string.IsNullOrEmpty("0")` is already false,
                     // but the comment is here because Minimap Vertical's default value
@@ -356,17 +361,20 @@ namespace PoncePuck.Keybinds
                             settingType = st,
                             value = val
                         });
-                        Debug.Log($"[PPKB] Added position setting: {pos} {st} = {val}");
+                        if (dbg) Debug.Log($"[PPKB] Added position setting: {pos} {st} = {val}");
                     }
                     else
                     {
+                        // Unconditional — empty val means a row was created but lost
+                        // its value somewhere (the historical Minimap Vertical bug).
+                        // Keep this loud so silent regressions don't slip in again.
                         Debug.LogWarning($"[PPKB] DROPPED row: pos={pos}, type={st}, val=\"{val}\" " +
                                          $"(slider={row.valueSlider?.value.ToString(inv) ?? "null"}, " +
                                          $"field=\"{row.valueField?.value ?? "null"}\", " +
                                          $"dropdown=\"{row.valueDropdown?.value ?? "null"}\")");
                     }
                 }
-                Debug.Log($"[PPKB] Total position settings to save: {_cmd.positionSettings.Count}");
+                if (dbg) Debug.Log($"[PPKB] Total position settings to save: {_cmd.positionSettings.Count}");
 
                 return true;
             }
