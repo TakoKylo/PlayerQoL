@@ -23,8 +23,25 @@ namespace PoncePuck.LocalMute
         }
 
         private static readonly Dictionary<string, CustomEmojiAsset> _emojiByToken = new Dictionary<string, CustomEmojiAsset>(StringComparer.OrdinalIgnoreCase);
+        // Kaomoji rendered to textures on demand (game font can't draw them). null = no kaomoji for token.
+        private static readonly Dictionary<string, CustomEmojiAsset> _kaomojiByToken = new Dictionary<string, CustomEmojiAsset>(StringComparer.OrdinalIgnoreCase);
+        // One representative (token, asset) per loaded file - drives the picker's Custom tab.
+        private static readonly List<KeyValuePair<string, CustomEmojiAsset>> _primaryTokens = new List<KeyValuePair<string, CustomEmojiAsset>>();
         private static readonly Regex TokenRegex = new Regex(@":[a-zA-Z0-9_\-]+:", RegexOptions.Compiled);
         private static bool _loaded;
+
+        /// <summary>One entry per loaded custom emoji file: (insertToken, thumbnail texture).</summary>
+        public static List<KeyValuePair<string, Texture2D>> GetPickerItems()
+        {
+            EnsureLoaded();
+            var result = new List<KeyValuePair<string, Texture2D>>(_primaryTokens.Count);
+            foreach (var kv in _primaryTokens)
+            {
+                if (kv.Value?.StaticFrame != null)
+                    result.Add(new KeyValuePair<string, Texture2D>(kv.Key, kv.Value.StaticFrame));
+            }
+            return result;
+        }
 
         public static bool TryApplyInlineEmojis(Label label, string sourceText)
         {
@@ -32,8 +49,6 @@ namespace PoncePuck.LocalMute
                 return false;
 
             EnsureLoaded();
-            if (_emojiByToken.Count == 0)
-                return false;
 
             var row = label.parent;
             if (row == null)
@@ -109,8 +124,28 @@ namespace PoncePuck.LocalMute
             {
                 if (_emojiByToken.TryGetValue(m.Value, out var asset))
                     result.Add((m.Index, m.Index + m.Length, asset));
+                else if (TryGetKaomojiAsset(m.Value, out var kaomoji))
+                    result.Add((m.Index, m.Index + m.Length, kaomoji));
             }
             return result;
+        }
+
+        // Lazily render a kaomoji shortcode (e.g. :tableflip:, :kao_shrug:) to a texture and cache it.
+        private static bool TryGetKaomojiAsset(string token, out CustomEmojiAsset asset)
+        {
+            if (_kaomojiByToken.TryGetValue(token, out asset))
+                return asset != null;
+
+            asset = null;
+            if (KaomojiSystem.TryGetKaomojiGlyph(token, out var glyph))
+            {
+                var tex = GlyphRenderer.Get(glyph, false, 40);
+                if (tex != null)
+                    asset = new CustomEmojiAsset { StaticFrame = tex };
+            }
+
+            _kaomojiByToken[token] = asset; // cache misses too, so we don't recompute every message
+            return asset != null;
         }
 
         private static Label MakeSegmentLabel(Label template, string text)
@@ -127,15 +162,19 @@ namespace PoncePuck.LocalMute
 
         private static UnityEngine.UIElements.Image MakeEmojiImage(CustomEmojiAsset asset)
         {
-            const float size = 20f;
+            const float height = 20f;
+            var tex = asset.StaticFrame;
+            // Square for picture emoji; preserve aspect for wide kaomoji textures.
+            float width = (tex != null && tex.height > 0) ? height * ((float)tex.width / tex.height) : height;
+
             var image = new UnityEngine.UIElements.Image();
             image.AddToClassList("ponce-custom-emoji");
-            image.style.width = size;
-            image.style.height = size;
+            image.style.width = width;
+            image.style.height = height;
             image.style.marginLeft = 1f;
             image.style.marginRight = 1f;
             image.style.flexShrink = 0;
-            image.image = asset.StaticFrame;
+            image.image = tex;
             if (asset.IsAnimated)
                 LocalMuteRunner.Run(AnimateGif(image, asset));
             return image;
@@ -206,11 +245,6 @@ namespace PoncePuck.LocalMute
             string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
             yield return Path.Combine(gameDir, "Plugins", "PlayerQoL", "Emojis");
             yield return Path.Combine(gameDir, "config", "ModHub", "PlayerQoL", "Emojis");
-
-            // Dev convenience path used in the current workspace.
-            yield return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                "OneDrive", "Desktop", "Desk", "Development", "Archive", "Puck stuff", "emojigg-collection");
         }
 
         private static void RegisterFromFile(string filePath)
@@ -227,6 +261,11 @@ namespace PoncePuck.LocalMute
                     return;
 
                 AddAliases(normalized, asset);
+
+                // Pick the cleanest token as the picker-facing name (drop "2579-" style ID prefixes).
+                string primary = Regex.Replace(normalized, @"^\d+[_-]*", string.Empty);
+                if (string.IsNullOrWhiteSpace(primary)) primary = normalized;
+                _primaryTokens.Add(new KeyValuePair<string, CustomEmojiAsset>($":{primary}:", asset));
             }
             catch (Exception ex)
             {

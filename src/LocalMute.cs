@@ -1829,6 +1829,9 @@ namespace PoncePuck.LocalMute
 
         void Update()
         {
+            // Keep the right-click emoji/kaomoji picker bound to the live chat UI.
+            try { ChatEmojiPicker.EnsureAttached(); } catch { }
+
             // Hook events once EventManager is available
             if (!_clientEventsHooked)
             {

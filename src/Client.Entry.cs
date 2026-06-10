@@ -46,9 +46,8 @@ public sealed class PoncePuck_Keybinds_ClientMod : global::IPuckPlugin
                 _host.AddComponent<PoncePuck.LocalMute.LocalMuteRunner>();
                 Debug.Log("[PPKB] LocalMute runner added.");
 
-                // Start live-gradient animation runner
-                PoncePuck.Keybinds.LiveGradientSystem.Initialize(_host);
-                Debug.Log("[PPKB] Live gradient system initialized.");
+                // (Live-gradient marker rendering moved into TagMod — clients with TagMod
+                // installed get the animated [[G|...]] / [[N|...]] effects automatically.)
 
                 // Initialize LocalMute patches
                 InitializeLocalMutePatches(_harmony);
@@ -71,9 +70,6 @@ public sealed class PoncePuck_Keybinds_ClientMod : global::IPuckPlugin
     public bool OnDisable()
     {
         IsModEnabled = false;
-
-        // Shut down live gradient animation runner
-        try { PoncePuck.Keybinds.LiveGradientSystem.Shutdown(); } catch { }
 
         try
         {

@@ -11,6 +11,16 @@ namespace PoncePuck.LocalMute
         private static Dictionary<string, string> _kaomojiMap;
         private static Dictionary<string, string> _emojiMap;
 
+        // Curated, de-duplicated, ordered lists used by the right-click chat picker.
+        // Each entry is (insertToken, displayGlyph). The picker writes insertToken into the
+        // chat box (shortcodes travel over the wire); ProcessKaomoji renders it locally.
+        private static List<KeyValuePair<string, string>> _emojiPickerItems;
+        private static List<KeyValuePair<string, string>> _kaomojiPickerItems;
+
+        // Emoji map sorted longest-token-first, cached once at init so ProcessKaomoji
+        // doesn't re-sort ~1500 entries on every chat message.
+        private static List<KeyValuePair<string, string>> _sortedEmoji;
+
         public static void Initialize()
         {
             // Native emoji shortcodes (B310 chat supports emoji rendering).
@@ -112,8 +122,365 @@ namespace PoncePuck.LocalMute
                 { ":snowflake:", "❄️" },
                 { ":sun:", "☀️" },
                 { ":moon:", "🌙" },
-                { ":pregnant_man:", "🫃" }
+                { ":pregnant_man:", "🫃" },
+
+                // ---- Expanded set: faces ----
+                { ":sweat_smile:", "😅" },
+                { ":lmao:", "🤣" },
+                { ":upside_down:", "🙃" },
+                { ":relieved:", "😌" },
+                { ":smirk:", "😏" },
+                { ":unamused:", "😒" },
+                { ":rolling_eyes:", "🙄" },
+                { ":grimace:", "😬" },
+                { ":pensive:", "😔" },
+                { ":confused:", "😕" },
+                { ":worried:", "😟" },
+                { ":frown:", "☹️" },
+                { ":fearful:", "😨" },
+                { ":cold_sweat:", "😰" },
+                { ":disappointed:", "😞" },
+                { ":persevere:", "😣" },
+                { ":tired_face:", "😫" },
+                { ":weary:", "😩" },
+                { ":no_mouth:", "😶" },
+                { ":neutral:", "😐" },
+                { ":expressionless:", "😑" },
+                { ":hushed:", "😯" },
+                { ":drooling:", "🤤" },
+                { ":nauseated:", "🤢" },
+                { ":vomit:", "🤮" },
+                { ":sneezing:", "🤧" },
+                { ":mask:", "😷" },
+                { ":sick:", "🤒" },
+                { ":head_bandage:", "🤕" },
+                { ":dizzy_face:", "😵" },
+                { ":exploding_head:", "🤯" },
+                { ":cowboy:", "🤠" },
+                { ":clown:", "🤡" },
+                { ":nerd:", "🤓" },
+                { ":monocle_face:", "🧐" },
+                { ":zany:", "🤪" },
+                { ":shush:", "🤫" },
+                { ":hand_over_mouth:", "🤭" },
+                { ":money_mouth:", "🤑" },
+                { ":hug_face:", "🤗" },
+                { ":star_struck:", "🤩" },
+                { ":yum:", "😋" },
+                { ":tongue_out:", "😛" },
+                { ":tongue_wink:", "😜" },
+                { ":tongue_closed:", "😝" },
+                { ":zipper_mouth:", "🤐" },
+                { ":smiling_imp:", "😈" },
+                { ":imp:", "👿" },
+                { ":halo:", "😇" },
+                { ":robot:", "🤖" },
+                { ":alien:", "👽" },
+
+                // ---- Gestures / body ----
+                { ":vulcan:", "🖖" },
+                { ":call_me:", "🤙" },
+                { ":crossed_fingers:", "🤞" },
+                { ":metal:", "🤘" },
+                { ":punch:", "👊" },
+                { ":open_hands:", "👐" },
+                { ":handshake:", "🤝" },
+                { ":writing_hand:", "✍️" },
+                { ":nail_polish:", "💅" },
+                { ":selfie:", "🤳" },
+                { ":middle_finger:", "🖕" },
+                { ":raised_hand:", "✋" },
+                { ":ear:", "👂" },
+                { ":nose:", "👃" },
+                { ":lips:", "💋" },
+                { ":tongue:", "👅" },
+                { ":brain:", "🧠" },
+                { ":tooth:", "🦷" },
+                { ":bone:", "🦴" },
+                { ":footprints:", "👣" },
+
+                // ---- Hearts / effects ----
+                { ":brown_heart:", "🤎" },
+                { ":revolving_hearts:", "💞" },
+                { ":heartbeat:", "💓" },
+                { ":heartpulse:", "💗" },
+                { ":cupid:", "💘" },
+                { ":gift_heart:", "💝" },
+                { ":heart_exclamation:", "❣️" },
+                { ":sweat_drops:", "💦" },
+                { ":dizzy:", "💫" },
+                { ":anger_symbol:", "💢" },
+                { ":speech:", "💬" },
+                { ":thought:", "💭" },
+                { ":zzz:", "💤" },
+
+                // ---- Animals ----
+                { ":monkey:", "🐵" },
+                { ":see_no_evil:", "🙈" },
+                { ":hear_no_evil:", "🙉" },
+                { ":speak_no_evil:", "🙊" },
+                { ":fox:", "🦊" },
+                { ":lion:", "🦁" },
+                { ":tiger:", "🐯" },
+                { ":panda:", "🐼" },
+                { ":koala:", "🐨" },
+                { ":pig:", "🐷" },
+                { ":frog:", "🐸" },
+                { ":chicken:", "🐔" },
+                { ":penguin:", "🐧" },
+                { ":duck:", "🦆" },
+                { ":owl:", "🦉" },
+                { ":bat:", "🦇" },
+                { ":wolf:", "🐺" },
+                { ":horse:", "🐴" },
+                { ":unicorn:", "🦄" },
+                { ":bee:", "🐝" },
+                { ":butterfly:", "🦋" },
+                { ":snail:", "🐌" },
+                { ":snake:", "🐍" },
+                { ":turtle:", "🐢" },
+                { ":crab:", "🦀" },
+                { ":octopus:", "🐙" },
+                { ":whale:", "🐳" },
+                { ":dolphin:", "🐬" },
+                { ":shark:", "🦈" },
+                { ":fish:", "🐟" },
+                { ":goat:", "🐐" },
+                { ":gorilla:", "🦍" },
+                { ":hamster:", "🐹" },
+                { ":mouse:", "🐭" },
+                { ":rabbit:", "🐰" },
+                { ":eagle:", "🦅" },
+                { ":dragon:", "🐉" },
+
+                // ---- Food / drink ----
+                { ":pizza:", "🍕" },
+                { ":burger:", "🍔" },
+                { ":fries:", "🍟" },
+                { ":hotdog:", "🌭" },
+                { ":taco:", "🌮" },
+                { ":burrito:", "🌯" },
+                { ":popcorn:", "🍿" },
+                { ":donut:", "🍩" },
+                { ":cookie:", "🍪" },
+                { ":cake:", "🍰" },
+                { ":birthday:", "🎂" },
+                { ":icecream:", "🍦" },
+                { ":candy:", "🍬" },
+                { ":chocolate:", "🍫" },
+                { ":apple:", "🍎" },
+                { ":banana:", "🍌" },
+                { ":watermelon:", "🍉" },
+                { ":grapes:", "🍇" },
+                { ":strawberry:", "🍓" },
+                { ":peach:", "🍑" },
+                { ":eggplant:", "🍆" },
+                { ":avocado:", "🥑" },
+                { ":corn:", "🌽" },
+                { ":hot_pepper:", "🌶️" },
+                { ":egg:", "🥚" },
+                { ":bacon:", "🥓" },
+                { ":pancakes:", "🥞" },
+                { ":bread:", "🍞" },
+                { ":cheese:", "🧀" },
+                { ":ramen:", "🍜" },
+                { ":sushi:", "🍣" },
+                { ":rice:", "🍚" },
+                { ":coffee:", "☕" },
+                { ":tea:", "🍵" },
+                { ":beer:", "🍺" },
+                { ":beers:", "🍻" },
+                { ":wine:", "🍷" },
+                { ":cocktail:", "🍸" },
+                { ":tropical_drink:", "🍹" },
+                { ":champagne:", "🍾" },
+                { ":milk:", "🥛" },
+
+                // ---- Sports / activities ----
+                { ":goal:", "🥅" },
+                { ":basketball:", "🏀" },
+                { ":football:", "🏈" },
+                { ":baseball:", "⚾" },
+                { ":tennis:", "🎾" },
+                { ":volleyball:", "🏐" },
+                { ":8ball:", "🎱" },
+                { ":golf:", "⛳" },
+                { ":bowling:", "🎳" },
+                { ":dart:", "🎯" },
+                { ":gamepad:", "🎮" },
+                { ":dice:", "🎲" },
+                { ":first_place:", "🥇" },
+                { ":second_place:", "🥈" },
+                { ":third_place:", "🥉" },
+                { ":running:", "🏃" },
+                { ":weight_lift:", "🏋️" },
+                { ":skate:", "⛸️" },
+                { ":ski:", "🎿" },
+                { ":guitar:", "🎸" },
+                { ":microphone:", "🎤" },
+                { ":headphones:", "🎧" },
+                { ":drum:", "🥁" },
+                { ":piano:", "🎹" },
+                { ":trumpet:", "🎺" },
+                { ":violin:", "🎻" },
+                { ":art:", "🎨" },
+                { ":clapper:", "🎬" },
+
+                // ---- Objects ----
+                { ":crown:", "👑" },
+                { ":gem:", "💎" },
+                { ":ring:", "💍" },
+                { ":bell:", "🔔" },
+                { ":key:", "🔑" },
+                { ":lock:", "🔒" },
+                { ":unlock:", "🔓" },
+                { ":hammer:", "🔨" },
+                { ":wrench:", "🔧" },
+                { ":gear:", "⚙️" },
+                { ":knife:", "🔪" },
+                { ":gun:", "🔫" },
+                { ":bomb:", "💣" },
+                { ":shield:", "🛡️" },
+                { ":crossed_swords:", "⚔️" },
+                { ":bow_arrow:", "🏹" },
+                { ":pill:", "💊" },
+                { ":syringe:", "💉" },
+                { ":microscope:", "🔬" },
+                { ":telescope:", "🔭" },
+                { ":flashlight:", "🔦" },
+                { ":candle:", "🕯️" },
+                { ":bulb:", "💡" },
+                { ":battery:", "🔋" },
+                { ":plug:", "🔌" },
+                { ":computer:", "💻" },
+                { ":keyboard:", "⌨️" },
+                { ":phone:", "📱" },
+                { ":camera:", "📷" },
+                { ":tv:", "📺" },
+                { ":alarm:", "⏰" },
+                { ":hourglass:", "⌛" },
+                { ":stopwatch:", "⏱️" },
+                { ":money:", "💰" },
+                { ":dollar:", "💵" },
+                { ":credit_card:", "💳" },
+                { ":chart_up:", "📈" },
+                { ":chart_down:", "📉" },
+                { ":package:", "📦" },
+                { ":pencil:", "✏️" },
+                { ":book:", "📖" },
+                { ":books:", "📚" },
+                { ":newspaper:", "📰" },
+                { ":scissors:", "✂️" },
+                { ":paperclip:", "📎" },
+                { ":pushpin:", "📌" },
+                { ":trash:", "🗑️" },
+                { ":door:", "🚪" },
+                { ":bed:", "🛏️" },
+
+                // ---- Nature / weather / travel ----
+                { ":cloud:", "☁️" },
+                { ":partly_sunny:", "⛅" },
+                { ":rain:", "🌧️" },
+                { ":thunder:", "⛈️" },
+                { ":snowman:", "⛄" },
+                { ":wind:", "💨" },
+                { ":droplet:", "💧" },
+                { ":ocean:", "🌊" },
+                { ":tornado:", "🌪️" },
+                { ":umbrella:", "☂️" },
+                { ":comet:", "☄️" },
+                { ":earth:", "🌍" },
+                { ":full_moon:", "🌕" },
+                { ":star2:", "🌟" },
+                { ":shooting_star:", "🌠" },
+                { ":tree:", "🌳" },
+                { ":palm:", "🌴" },
+                { ":cactus:", "🌵" },
+                { ":clover:", "🍀" },
+                { ":maple_leaf:", "🍁" },
+                { ":leaves:", "🍃" },
+                { ":mushroom:", "🍄" },
+                { ":rose:", "🌹" },
+                { ":sunflower:", "🌻" },
+                { ":tulip:", "🌷" },
+                { ":blossom:", "🌸" },
+                { ":bouquet:", "💐" },
+                { ":seedling:", "🌱" },
+                { ":volcano:", "🌋" },
+                { ":mountain:", "⛰️" },
+                { ":house:", "🏠" },
+                { ":castle:", "🏰" },
+                { ":stadium:", "🏟️" },
+                { ":car:", "🚗" },
+                { ":taxi:", "🚕" },
+                { ":bus:", "🚌" },
+                { ":truck:", "🚚" },
+                { ":police_car:", "🚓" },
+                { ":ambulance:", "🚑" },
+                { ":fire_engine:", "🚒" },
+                { ":bike:", "🚲" },
+                { ":motorcycle:", "🏍️" },
+                { ":train:", "🚆" },
+                { ":airplane:", "✈️" },
+                { ":helicopter:", "🚁" },
+                { ":ship:", "🚢" },
+                { ":sailboat:", "⛵" },
+                { ":anchor:", "⚓" },
+                { ":fuel:", "⛽" },
+                { ":construction:", "🚧" },
+
+                // ---- Flags / symbols / celebration ----
+                { ":checkered_flag:", "🏁" },
+                { ":red_flag:", "🚩" },
+                { ":white_flag:", "🏳️" },
+                { ":black_flag:", "🏴" },
+                { ":pirate_flag:", "🏴‍☠️" },
+                { ":radioactive:", "☢️" },
+                { ":biohazard:", "☣️" },
+                { ":recycle:", "♻️" },
+                { ":peace_symbol:", "☮️" },
+                { ":yin_yang:", "☯️" },
+                { ":no_entry:", "⛔" },
+                { ":prohibited:", "🚫" },
+                { ":heavy_check:", "✔️" },
+                { ":plus:", "➕" },
+                { ":minus:", "➖" },
+                { ":divide:", "➗" },
+                { ":multiply:", "✖️" },
+                { ":red_circle:", "🔴" },
+                { ":blue_circle:", "🔵" },
+                { ":balloon:", "🎈" },
+                { ":confetti:", "🎊" },
+                { ":gift:", "🎁" },
+                { ":fireworks:", "🎆" },
+                { ":christmas_tree:", "🎄" },
+                { ":pumpkin:", "🎃" },
+                { ":crystal_ball:", "🔮" },
+                { ":santa:", "🎅" },
+
+                // ---- People / fantasy ----
+                { ":baby:", "👶" },
+                { ":boy:", "👦" },
+                { ":girl:", "👧" },
+                { ":man:", "👨" },
+                { ":woman:", "👩" },
+                { ":old_man:", "👴" },
+                { ":old_woman:", "👵" },
+                { ":police:", "👮" },
+                { ":detective:", "🕵️" },
+                { ":zombie:", "🧟" },
+                { ":vampire:", "🧛" },
+                { ":mage:", "🧙" },
+                { ":fairy:", "🧚" },
+                { ":genie:", "🧞" },
+                { ":mermaid:", "🧜" },
+                { ":elf:", "🧝" }
             };
+
+            // Snapshot the curated emoji set for the picker BEFORE we expand the
+            // map with hundreds of auto-generated aliases. De-dup by glyph so each
+            // emoji shows once (keeping the first/cleanest shortcode for insertion).
+            _emojiPickerItems = BuildPickerItems(_emojiMap, null);
 
             ExpandEmojiAliases();
 
@@ -267,9 +634,52 @@ namespace PoncePuck.LocalMute
                 { ":pray:", "人(-ω-)人" },
                 { ":peace:", "v(-‿-)v" },
                 { ":highfive:", "( '▽')／＼(▽' )" },
-                { ":fistbump:", "╰(◕ヮ◕)つ¤=[]:::::::>" }
+                { ":fistbump:", "╰(◕ヮ◕)つ¤=[]:::::::>" },
+
+                // ---- Expanded set ----
+                { ":uwu:", "UwU" },
+                { ":owo:", "OwO" },
+                { ":rageflip:", "(ノಠ益ಠ)ノ彡┻━┻" },
+                { ":doubleflip:", "┻━┻︵ \\(°□°)/ ︵ ┻━┻" },
+                { ":strong:", "ᕦ(ò_óˇ)ᕤ" },
+                { ":gimme:", "༼ つ ◕_◕ ༽つ" },
+                { ":why:", "ლ(ಠ益ಠლ)" },
+                { ":weep:", "(ノ_<。)" },
+                { ":happydance:", "♪♪ ヽ(ˇ∀ˇ )ゞ" },
+                { ":finger_guns:", "(☞ﾟヮﾟ)☞" },
+                { ":sparkleeyes:", "(☆▽☆)" },
+                { ":inlove:", "(´∀｀)♡" },
+                { ":singing:", "♪(´ε｀ )" },
+                { ":cheers:", "( ^_^)o自自o(^_^ )" },
+                { ":hide:", "|ω・）" },
+                { ":peek:", "┬┴┬┴┤(･_├┬┴┬┴" },
+                { ":judging:", "(¬¬ )" },
+                { ":screaming:", "ヽ(ﾟДﾟ)ﾉ" },
+                { ":whatever:", "╮(╯▽╰)╭" },
+                { ":sorry:", "(シ_ _)シ" },
+                { ":please:", "(人◕ω◕)" },
+                { ":success:", "(•̀ᴗ•́)و" }
             };
-            
+
+            // Snapshot the kaomoji set for the picker (de-dup by glyph) BEFORE adding
+            // the alias namespace below.
+            _kaomojiPickerItems = BuildPickerItems(_kaomojiMap, ":kao_");
+
+            // Many kaomoji shortcodes (:happy:, :shrug:, :wave:, ...) collide with emoji
+            // shortcodes, and ProcessKaomoji applies the emoji map first - so those kaomoji
+            // were unreachable. Register a collision-proof ":kao_<name>:" alias for every
+            // kaomoji so the picker (and power users) can always force the text-face variant.
+            foreach (var kvp in _kaomojiMap.ToList())
+            {
+                string core = kvp.Key.Trim(':');
+                if (string.IsNullOrWhiteSpace(core)) continue;
+                string alias = ":kao_" + core + ":";
+                if (!_kaomojiMap.ContainsKey(alias))
+                    _kaomojiMap[alias] = kvp.Value;
+            }
+
+            _sortedEmoji = _emojiMap.OrderByDescending(pair => pair.Key.Length).ToList();
+
             Debug.Log($"[KaomojiSystem] Initialized with {_emojiMap.Count} emoji + {_kaomojiMap.Count} kaomoji fallback entries");
         }
 
@@ -375,11 +785,14 @@ namespace PoncePuck.LocalMute
         }
 
         /// <summary>
-        /// Process kaomoji shortcodes in a message
+        /// Replace EMOJI shortcodes with their unicode glyphs. Emoji render in colour via the game's
+        /// panel emoji fallback. Kaomoji shortcodes are intentionally LEFT INTACT here: the game font
+        /// can't draw them (they'd be tofu boxes), so CustomEmojiPack renders them as inline images
+        /// instead - see TryGetKaomojiGlyph.
         /// </summary>
         public static string ProcessKaomoji(string message)
         {
-            if (string.IsNullOrEmpty(message) || _kaomojiMap == null)
+            if (string.IsNullOrEmpty(message))
                 return message;
 
             // Skip work when the message clearly contains no shortcode markers.
@@ -388,10 +801,11 @@ namespace PoncePuck.LocalMute
 
             string result = message;
 
-            // Process longer tokens first so :broken_heart: wins over :heart:.
-            if (_emojiMap != null)
+            // Longer tokens first so :broken_heart: wins over :heart: (list pre-sorted at init).
+            var sorted = _sortedEmoji;
+            if (sorted != null)
             {
-                foreach (var kvp in _emojiMap.OrderByDescending(pair => pair.Key.Length))
+                foreach (var kvp in sorted)
                 {
                     if (result.Contains(kvp.Key))
                     {
@@ -399,17 +813,17 @@ namespace PoncePuck.LocalMute
                     }
                 }
             }
-            
-            // 2) Kaomoji fallback for shortcode tokens that do not have emoji mappings.
-            foreach (var kvp in _kaomojiMap.OrderByDescending(pair => pair.Key.Length))
-            {
-                if (result.Contains(kvp.Key))
-                {
-                    result = result.Replace(kvp.Key, kvp.Value);
-                }
-            }
-            
+
             return result;
+        }
+
+        /// <summary>Look up the kaomoji face for a shortcode token (incl. the :kao_*: namespace).</summary>
+        public static bool TryGetKaomojiGlyph(string token, out string glyph)
+        {
+            glyph = null;
+            if (_kaomojiMap == null || string.IsNullOrEmpty(token))
+                return false;
+            return _kaomojiMap.TryGetValue(token, out glyph);
         }
 
         /// <summary>
@@ -418,6 +832,48 @@ namespace PoncePuck.LocalMute
         public static Dictionary<string, string> GetAllKaomoji()
         {
             return new Dictionary<string, string>(_kaomojiMap);
+        }
+
+        /// <summary>
+        /// Build an ordered, glyph-de-duplicated picker list from a shortcode map.
+        /// When <paramref name="insertPrefix"/> is set (e.g. ":kao_"), the insert token is
+        /// rewritten to that collision-proof namespace; otherwise the original key is used.
+        /// </summary>
+        private static List<KeyValuePair<string, string>> BuildPickerItems(
+            Dictionary<string, string> source, string insertPrefix)
+        {
+            var items = new List<KeyValuePair<string, string>>();
+            if (source == null) return items;
+
+            var seenGlyphs = new HashSet<string>();
+            foreach (var kvp in source)
+            {
+                if (string.IsNullOrEmpty(kvp.Value) || !seenGlyphs.Add(kvp.Value))
+                    continue;
+
+                string token = kvp.Key;
+                if (!string.IsNullOrEmpty(insertPrefix))
+                    token = insertPrefix + kvp.Key.Trim(':') + ":";
+
+                items.Add(new KeyValuePair<string, string>(token, kvp.Value));
+            }
+            return items;
+        }
+
+        /// <summary>Curated emoji entries for the right-click picker: (insertToken, glyph).</summary>
+        public static List<KeyValuePair<string, string>> GetEmojiPickerItems()
+        {
+            return _emojiPickerItems != null
+                ? new List<KeyValuePair<string, string>>(_emojiPickerItems)
+                : new List<KeyValuePair<string, string>>();
+        }
+
+        /// <summary>Curated kaomoji entries for the right-click picker: (insertToken, glyph).</summary>
+        public static List<KeyValuePair<string, string>> GetKaomojiPickerItems()
+        {
+            return _kaomojiPickerItems != null
+                ? new List<KeyValuePair<string, string>>(_kaomojiPickerItems)
+                : new List<KeyValuePair<string, string>>();
         }
     }
 }

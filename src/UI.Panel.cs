@@ -933,11 +933,12 @@ namespace PoncePuck.Keybinds
                 bigTitle.style.unityFontStyleAndWeight = FontStyle.Normal;
                 bigTitle.style.fontSize = 50;
                 bigTitle.style.color = Color.white;
-                bigTitle.style.marginBottom = 8;
+                bigTitle.style.marginBottom = 16;
                 _ppkbPanel.Add(bigTitle);
 
                 _tabBar = new UITK.VisualElement();
                 _tabBar.style.flexDirection = UITK.FlexDirection.Row; _tabBar.style.marginBottom = 8;
+                _tabBar.style.height = 50;
                 _ppkbPanel.Add(_tabBar);
                 ForceUIFont(_ppkbPanel);
 
@@ -950,7 +951,10 @@ namespace PoncePuck.Keybinds
                     b.style.paddingLeft = 8;
                     b.style.paddingRight = 8;
                     b.style.marginRight = 8;
-                    b.style.marginBottom = 26;
+                    // Spacing below the tab strip is owned by tabBar.marginBottom; the
+                    // button keeps no bottom margin of its own (it used to stack a second
+                    // gap and push the content area down).
+                    b.style.marginBottom = 0;
                     b.style.fontSize = 24;
                     b.style.borderTopLeftRadius = 6;
                     b.style.borderTopRightRadius = 6;
@@ -967,6 +971,9 @@ namespace PoncePuck.Keybinds
                 _tabSocial = MakeTab("PLAYERS", () => ShowTab(PpkbTab.Social));
                 _tabCommands = MakeTab("COMMANDS", () => ShowTab(PpkbTab.Commands));
                 _tabSettings = MakeTab("SETTINGS", () => ShowTab(PpkbTab.Settings));
+                // Last tab keeps no right margin so SETTINGS sits flush with the right
+                // edge the same way POSITIONS hugs the left.
+                _tabSettings.style.marginRight = 0;
                 _tabBar.Add(_tabActions); _tabBar.Add(_tabCommands); _tabBar.Add(_tabSocial); _tabBar.Add(_tabSettings);
                 AddTabHover(_tabActions, () => _activeTab == PpkbTab.Positions);
                 AddTabHover(_tabSocial, () => _activeTab == PpkbTab.Social);
@@ -979,6 +986,13 @@ namespace PoncePuck.Keybinds
                     horizontalScrollerVisibility = UITK.ScrollerVisibility.Hidden
                 };
                 scroll.style.flexGrow = 1;
+                // A flex item's default min-height is its content size, so a
+                // long list keeps the scroll view tall and pushes the footer
+                // past the panel's clipped bottom (the buttons then overlap the
+                // window edge). Pin min-height to 0 so the scroll view shrinks
+                // and the footer stays in.
+                scroll.style.flexShrink = 1;
+                scroll.style.minHeight = 0;
                 _ppkbPanel.Add(scroll);
 
                 _actionsSectionVE = new UITK.VisualElement();
@@ -994,13 +1008,15 @@ namespace PoncePuck.Keybinds
                 row.style.flexDirection = UITK.FlexDirection.Row;
                 row.style.justifyContent = UITK.Justify.SpaceBetween;
                 row.style.marginTop = 8;
+                row.style.flexShrink = 0;   // footer keeps its size; the list shrinks instead
 
+                // Footer buttons keep no bottom margins of their own - the 8px
+                // gap under the row comes from the panel's bottom padding.
                 UITK.Button MakeDonateButton(string t, Action onClick)
                 {
                     var b = new UITK.Button(onClick) { text = t.ToUpperInvariant() };
                     b.style.unityTextAlign = new UITK.StyleEnum<TextAnchor>(TextAnchor.MiddleCenter);
                     b.style.height = 50;
-                    b.style.marginBottom = 8;
                     b.style.paddingLeft = 18; b.style.paddingRight = 18;
                     b.style.backgroundColor = new UITK.StyleColor(BtnBrightGray);
                     AddButtonFlash(b);
@@ -1011,7 +1027,6 @@ namespace PoncePuck.Keybinds
                     var b = new UITK.Button(onClick) { text = t.ToUpperInvariant() };
                     b.style.unityTextAlign = new UITK.StyleEnum<TextAnchor>(TextAnchor.MiddleCenter);
                     b.style.height = 50;
-                    b.style.marginBottom = 22;
                     b.style.paddingLeft = 18; b.style.paddingRight = 18;
                     b.style.marginLeft = 8;
                     b.style.backgroundColor = BtnBrightGray;
@@ -1023,7 +1038,6 @@ namespace PoncePuck.Keybinds
                     var b = new UITK.Button(onClick) { text = t.ToUpperInvariant() };
                     b.style.unityTextAlign = new UITK.StyleEnum<TextAnchor>(TextAnchor.MiddleCenter);
                     b.style.height = 50;
-                    b.style.marginBottom = 22;
                     b.style.paddingLeft = 18; b.style.paddingRight = 182;
                     b.style.marginLeft = 8;
                     b.style.backgroundColor = BtnBrightGray;

@@ -240,7 +240,7 @@ namespace PoncePuck.Keybinds
         public float _panelBrightnessSlider = 0.20f;
 
         public bool enableChatRichText = true;  // Enable rich text in chat messages (default on)
-        public bool enableLiveGradients = true; // Animate rolling gradient tags from TagMod (default on)
+        public bool enableEmojiPicker = true;   // Right-click the chat box for an emoji/kaomoji picker (default on)
         public bool disableArenaVisuals = false;  // Disable arena/stadium visuals completely (default off)
         public bool disableArenaProps = false;    // Disable 3D props/meshes (default off - enabled)
         public bool disableArenaLights = false;   // Disable arena lights (default off - enabled)

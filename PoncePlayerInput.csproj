@@ -47,9 +47,6 @@
   <Target Name="PostBuildDeploy" AfterTargets="Build">
     <PropertyGroup>
       <TargetDir>C:\Program Files (x86)\Steam\steamapps\common\Puck\Plugins\PlayerQoL</TargetDir>
-      <!-- Puck loads BOTH the local Plugins copy AND the subscribed workshop copy;
-           the workshop copy silently wins, so keep it in sync. -->
-      <WorkshopDir>C:\Program Files (x86)\Steam\steamapps\workshop\content\2994020\3574337071</WorkshopDir>
     </PropertyGroup>
     <MakeDir Directories="$(TargetDir)" />
     <MakeDir Directories="$(TargetDir)\PingSounds" />
