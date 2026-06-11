@@ -278,8 +278,69 @@ namespace PoncePuck.LocalMute
             return Path.Combine(gameDir, "config", "ModHub", "PlayerQoL", "EmojiCache");
         }
 
+        private static string GetEmojisDir()
+        {
+            string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            return Path.Combine(gameDir, "config", "ModHub", "PlayerQoL", "Emojis");
+        }
+
+        private const string LinksHeader =
+            "# Custom emoji links - one per line, same style as SprayMod:\n" +
+            "#   name = https://example.com/image.png\n" +
+            "#   https://example.com/other.gif   (name taken from the file name)\n" +
+            "# Supported: png, jpg, gif (animated gifs work). Downloads are cached.\n" +
+            "# Delete lines you don't want - this file is only created once.\n";
+
+        /// <summary>Open links.txt in the system editor (creates it with the header if missing).</summary>
+        public static void OpenLinksFile()
+        {
+            try
+            {
+                string dir = GetEmojisDir();
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, "links.txt");
+                // Recreate with header only - a user who deleted entries shouldn't get defaults back.
+                if (!File.Exists(path))
+                    File.WriteAllText(path, LinksHeader);
+                Application.OpenURL("file:///" + path.Replace('\\', '/'));
+            }
+            catch (Exception ex) { Debug.LogWarning($"[CustomEmoji] OpenLinksFile failed: {ex.Message}"); }
+        }
+
+        /// <summary>Open the custom emoji folder in the file explorer.</summary>
+        public static void OpenEmojiFolder()
+        {
+            try
+            {
+                string dir = GetEmojisDir();
+                Directory.CreateDirectory(dir);
+                Application.OpenURL("file:///" + dir.Replace('\\', '/'));
+            }
+            catch (Exception ex) { Debug.LogWarning($"[CustomEmoji] OpenEmojiFolder failed: {ex.Message}"); }
+        }
+
         private static void LoadLinkEmojis()
         {
+            // One-time migration: earlier builds seeded links.txt next to the DLL in
+            // Plugins/PlayerQoL/Emojis; user-editable files belong under config/.
+            try
+            {
+                string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+                string oldLinks = Path.Combine(gameDir, "Plugins", "PlayerQoL", "Emojis", "links.txt");
+                string newDir = Path.Combine(gameDir, "config", "ModHub", "PlayerQoL", "Emojis");
+                string newLinks = Path.Combine(newDir, "links.txt");
+                if (File.Exists(oldLinks) && !File.Exists(newLinks))
+                {
+                    Directory.CreateDirectory(newDir);
+                    File.Move(oldLinks, newLinks);
+                    Debug.Log("[CustomEmoji] Moved links.txt to config/ModHub/PlayerQoL/Emojis");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[CustomEmoji] links.txt migration failed: {ex.Message}");
+            }
+
             bool sawAnyLinksFile = false;
 
             foreach (string root in GetSearchRoots())
@@ -316,16 +377,10 @@ namespace PoncePuck.LocalMute
             {
                 try
                 {
-                    string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-                    string dir = Path.Combine(gameDir, "Plugins", "PlayerQoL", "Emojis");
+                    string dir = GetEmojisDir();
                     Directory.CreateDirectory(dir);
 
-                    var sb = new StringBuilder();
-                    sb.AppendLine("# Custom emoji links - one per line, same style as SprayMod:");
-                    sb.AppendLine("#   name = https://example.com/image.png");
-                    sb.AppendLine("#   https://example.com/other.gif   (name taken from the file name)");
-                    sb.AppendLine("# Supported: png, jpg, gif (animated gifs work). Downloads are cached.");
-                    sb.AppendLine("# Delete lines you don't want - this file is only created once.");
+                    var sb = new StringBuilder(LinksHeader);
                     sb.AppendLine();
                     foreach (var kv in DefaultLinkEmojis)
                         sb.AppendLine($"{kv.Key} = {kv.Value}");
@@ -462,8 +517,10 @@ namespace PoncePuck.LocalMute
         private static IEnumerable<string> GetSearchRoots()
         {
             string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-            yield return Path.Combine(gameDir, "Plugins", "PlayerQoL", "Emojis");
+            // Documented home: config, like every other user-editable PlayerQoL file.
             yield return Path.Combine(gameDir, "config", "ModHub", "PlayerQoL", "Emojis");
+            // Legacy location kept readable so existing installs don't lose emojis.
+            yield return Path.Combine(gameDir, "Plugins", "PlayerQoL", "Emojis");
         }
 
         private static void RegisterFromFile(string filePath)

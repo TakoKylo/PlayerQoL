@@ -440,9 +440,24 @@ namespace PoncePuck.LocalMute
         {
             var items = CustomEmojiPack.GetPickerItems();
             _customGridCount = items.Count;
+
+            // Quick-access row: links.txt is the intended way to add custom emojis.
+            var actions = new VisualElement();
+            actions.style.flexDirection = FlexDirection.Row;
+            actions.style.width = new Length(100, LengthUnit.Percent);
+            actions.style.marginBottom = 4f;
+
+            var editBtn = MakeTab("EDIT LINKS", CustomEmojiPack.OpenLinksFile);
+            editBtn.tooltip = "Open links.txt - add lines like: name = https://...";
+            var folderBtn = MakeTab("OPEN FOLDER", CustomEmojiPack.OpenEmojiFolder);
+            folderBtn.tooltip = "Open the custom emoji folder";
+            actions.Add(editBtn);
+            actions.Add(folderBtn);
+            grid.Add(actions);
+
             if (items.Count == 0)
             {
-                var hint = new Label("No custom emojis found.\nDrop PNG/JPG/GIF files into Plugins\\PlayerQoL\\Emojis,\nor add image links to Emojis\\links.txt (name = https://...).");
+                var hint = new Label("No custom emojis yet.\nClick EDIT LINKS and add a line per emoji:\n  catjam = https://files.catbox.moe/6xy3ks.gif\nThey download automatically and show up here.");
                 hint.style.color = TextCol;
                 hint.style.fontSize = 13;
                 hint.style.whiteSpace = WhiteSpace.Normal;
