@@ -38,6 +38,7 @@ namespace PoncePuck.LocalMute
         private static TextField _focusHookedField;
         private static bool _loggedRightClick;
         private static VisualElement _popup;
+        private static VisualElement _emojiButton; // visible 🙂 button under the text box
         private static ScrollView _emojiScroll;
         private static ScrollView _kaomojiScroll;
         private static ScrollView _customScroll;
@@ -89,6 +90,92 @@ namespace PoncePuck.LocalMute
                 _hookedRoot = root;
                 Debug.Log("[EmojiPicker] Right-click handler attached to chat panel root.");
             }
+
+            EnsureButton();
+            UpdateButton();
+        }
+
+        // -------------------------------------------------------------------------
+        // Visible 🙂 button under the text box (shown only while chat input is open).
+        // -------------------------------------------------------------------------
+        private static void EnsureButton()
+        {
+            var parent = _chatRoot;
+            if (parent == null) return;
+            if (_emojiButton != null && _emojiButton.parent == parent) return;
+
+            if (_emojiButton == null)
+            {
+                _emojiButton = new VisualElement { name = "ponce_emoji_button" };
+                // Focusable for the same reason as picker items: the click must land focus on a
+                // chat descendant or UIChat closes the chat and wipes the typed text.
+                _emojiButton.focusable = true;
+                _emojiButton.tooltip = "Emoji picker (or right-click the chat box)";
+                _emojiButton.style.position = Position.Absolute;
+                _emojiButton.style.flexDirection = FlexDirection.Row;
+                _emojiButton.style.alignItems = Align.Center;
+                _emojiButton.style.justifyContent = Justify.Center;
+                _emojiButton.style.height = 24f;
+                _emojiButton.style.paddingLeft = _emojiButton.style.paddingRight = 8f;
+                _emojiButton.style.backgroundColor = TabIdle;
+                SetBorder(_emojiButton, 1f, BorderCol);
+                SetRadius(_emojiButton, 4f);
+
+                var lbl = new Label("🙂") { pickingMode = PickingMode.Ignore };
+                lbl.style.color = TextCol;
+                lbl.style.fontSize = 14;
+                lbl.style.unityTextAlign = TextAnchor.MiddleCenter;
+                _emojiButton.Add(lbl);
+
+                _emojiButton.RegisterCallback<PointerEnterEvent>(_ => _emojiButton.style.backgroundColor = ItemHover);
+                _emojiButton.RegisterCallback<PointerLeaveEvent>(_ => _emojiButton.style.backgroundColor = TabIdle);
+                _emojiButton.RegisterCallback<PointerDownEvent>(evt =>
+                {
+                    evt.StopPropagation();
+                    evt.StopImmediatePropagation();
+                    // Capture the caret while the field is still focused, then restore
+                    // focus+caret after the click's focus shift has settled.
+                    int caret = -1;
+                    try { caret = _field != null ? _field.cursorIndex : -1; } catch { }
+                    Toggle();
+                    FocusFieldDeferred(caret);
+                });
+
+                _emojiButton.style.display = DisplayStyle.None;
+            }
+
+            _emojiButton.RemoveFromHierarchy();
+            parent.Add(_emojiButton);
+        }
+
+        private static void UpdateButton()
+        {
+            if (_emojiButton == null) return;
+
+            bool show = false;
+            try { show = _chat != null && _chat.IsFocused && IsEnabled(); } catch { }
+            _emojiButton.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+            if (!show) return;
+
+            var parent = _emojiButton.parent;
+            if (parent == null || _field == null) return;
+
+            // Right-aligned just under the text box (same world->local conversion as the popup,
+            // so the position holds for any chat scale).
+            Rect pw = parent.worldBound;
+            Rect fw = _field.worldBound;
+            float localH = parent.resolvedStyle.height;
+            float scale = (localH > 1f && pw.height > 1f) ? pw.height / localH : 1f;
+            if (scale <= 0.01f) scale = 1f;
+
+            float wLocal = _emojiButton.resolvedStyle.width; if (wLocal <= 1f) wLocal = 40f;
+            float wWorld = wLocal * scale;
+
+            float leftWorld = fw.xMax - wWorld;
+            float topWorld = fw.yMax + 4f;
+
+            _emojiButton.style.left = (leftWorld - pw.xMin) / scale;
+            _emojiButton.style.top = (topWorld - pw.yMin) / scale;
         }
 
         private static bool PopupVisible => _popup != null && _popup.style.display == DisplayStyle.Flex;
@@ -177,6 +264,7 @@ namespace PoncePuck.LocalMute
 
             _popup.style.display = DisplayStyle.Flex;
             _popup.BringToFront();
+            RebuildCustomGrid(); // pick up link emojis whose downloads finished since last open
             SelectTab(_activeTab);
             Reposition();
         }
@@ -188,9 +276,12 @@ namespace PoncePuck.LocalMute
 
         private static void OnFieldFocusOut(FocusOutEvent evt)
         {
-            // Keep the picker open when focus moved into it (e.g. clicking an emoji item).
+            // Keep the picker open when focus moved into it (e.g. clicking an emoji item)
+            // or onto the 🙂 button (its own handler decides whether to toggle).
             var rt = evt.relatedTarget as VisualElement;
             if (rt != null && _popup != null && (rt == _popup || _popup.Contains(rt)))
+                return;
+            if (rt != null && _emojiButton != null && (rt == _emojiButton || _emojiButton.Contains(rt)))
                 return;
             Hide();
         }
@@ -317,7 +408,9 @@ namespace PoncePuck.LocalMute
             return scroll;
         }
 
-        // Custom tab: image emoji loaded from Plugins/PlayerQoL/Emojis (PNG/JPG/GIF).
+        // Custom tab: image emoji loaded from Plugins/PlayerQoL/Emojis (PNG/JPG/GIF + links.txt URLs).
+        private static int _customGridCount = -1;
+
         private static ScrollView MakeCustomGrid()
         {
             var scroll = new ScrollView(ScrollViewMode.Vertical);
@@ -329,16 +422,33 @@ namespace PoncePuck.LocalMute
             grid.style.flexWrap = Wrap.Wrap;
             grid.style.alignItems = Align.Center;
 
+            FillCustomGrid(grid);
+            return scroll;
+        }
+
+        private static void RebuildCustomGrid()
+        {
+            if (_customScroll == null) return;
+            // Only rebuild when the loaded set actually changed (downloads finishing async).
+            if (CustomEmojiPack.GetPickerItems().Count == _customGridCount) return;
+            var grid = _customScroll.contentContainer;
+            grid.Clear();
+            FillCustomGrid(grid);
+        }
+
+        private static void FillCustomGrid(VisualElement grid)
+        {
             var items = CustomEmojiPack.GetPickerItems();
+            _customGridCount = items.Count;
             if (items.Count == 0)
             {
-                var hint = new Label("No custom emojis found.\nDrop PNG/JPG/GIF files into Plugins\\PlayerQoL\\Emojis.");
+                var hint = new Label("No custom emojis found.\nDrop PNG/JPG/GIF files into Plugins\\PlayerQoL\\Emojis,\nor add image links to Emojis\\links.txt (name = https://...).");
                 hint.style.color = TextCol;
                 hint.style.fontSize = 13;
                 hint.style.whiteSpace = WhiteSpace.Normal;
                 hint.style.paddingLeft = hint.style.paddingTop = 8f;
                 grid.Add(hint);
-                return scroll;
+                return;
             }
 
             foreach (var item in items)
@@ -375,8 +485,6 @@ namespace PoncePuck.LocalMute
 
                 grid.Add(cell);
             }
-
-            return scroll;
         }
 
         private static VisualElement MakeItem(string token, string glyph, bool isEmoji)
@@ -465,48 +573,56 @@ namespace PoncePuck.LocalMute
 
             string cur = _field.value ?? string.Empty;
             int caret = cur.Length;
+            try { caret = Mathf.Clamp(_field.cursorIndex, 0, cur.Length); } catch { }
 
-            try
-            {
-                var ci = typeof(TextField).GetProperty("cursorIndex",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (ci != null && ci.GetValue(_field) is int idx)
-                    caret = Mathf.Clamp(idx, 0, cur.Length);
-            }
-            catch { }
-
-            string next = cur.Substring(0, caret) + token + cur.Substring(caret);
+            // Trailing space so the next emoji/word doesn't fuse with this token.
+            string insert = token + " ";
+            string next = cur.Substring(0, caret) + insert + cur.Substring(caret);
             _field.value = next;
 
-            // Return focus to the input box so Enter sends and the user can keep typing.
-            try { _field.Focus(); } catch { }
-
-            int newCaret = Mathf.Min(caret + token.Length, next.Length);
-            try
-            {
-                var t = typeof(TextField);
-                t.GetProperty("cursorIndex", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    ?.SetValue(_field, newCaret);
-                t.GetProperty("selectIndex", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    ?.SetValue(_field, newCaret);
-            }
-            catch { }
+            FocusFieldDeferred(Mathf.Min(caret + insert.Length, next.Length));
 
             Debug.Log($"[EmojiPicker] inserted '{token}', value now: '{_field.value}'");
+        }
+
+        /// <summary>
+        /// Return focus to the text field with the caret at <paramref name="caret"/>.
+        /// Deferred one panel update: the clicked picker cell takes keyboard focus AFTER
+        /// the pointer handler returns, which would override an immediate Focus() call.
+        /// SelectRange also collapses any select-all-on-focus selection.
+        /// </summary>
+        private static void FocusFieldDeferred(int caret)
+        {
+            var f = _field;
+            if (f == null) return;
+            f.schedule.Execute(() =>
+            {
+                try
+                {
+                    f.Focus();
+                    if (caret >= 0)
+                        f.SelectRange(caret, caret);
+                }
+                catch (Exception e) { Debug.LogWarning("[EmojiPicker] refocus failed: " + e.Message); }
+            });
         }
 
         // -------------------------------------------------------------------------
         // Helpers
         // -------------------------------------------------------------------------
+        private static FieldInfo _cmdField; // cached: IsEnabled runs every frame via UpdateButton
+
         private static bool IsEnabled()
         {
             try
             {
-                var runner = UnityEngine.Object.FindFirstObjectByType<PoncePuck.Keybinds.KeybindRunner>();
+                // Static instance, not FindFirstObjectByType - this is a per-frame path.
+                var runner = PoncePuck.Keybinds.KeybindRunner.Instance;
                 if (runner == null) return true;
-                var cmdField = typeof(PoncePuck.Keybinds.KeybindRunner).GetField("_cmd",
-                    BindingFlags.Instance | BindingFlags.NonPublic);
-                var cmd = cmdField?.GetValue(runner) as PoncePuck.Keybinds.CommandKeybindConfig;
+                if (_cmdField == null)
+                    _cmdField = typeof(PoncePuck.Keybinds.KeybindRunner).GetField("_cmd",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                var cmd = _cmdField?.GetValue(runner) as PoncePuck.Keybinds.CommandKeybindConfig;
                 return cmd == null || cmd.enableEmojiPicker;
             }
             catch { return true; }

@@ -1882,6 +1882,9 @@ namespace PoncePuck.LocalMute
             // Keep the right-click emoji/kaomoji picker bound to the live chat UI.
             try { ChatEmojiPicker.EnsureAttached(); } catch { }
 
+            // Start any queued links.txt emoji downloads (no-op when the queue is empty).
+            try { CustomEmojiPack.PumpPendingDownloads(); } catch { }
+
             // Hook events once EventManager is available
             if (!_clientEventsHooked)
             {

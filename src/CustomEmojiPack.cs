@@ -8,6 +8,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.UIElements;
 
 namespace PoncePuck.LocalMute
@@ -29,6 +30,10 @@ namespace PoncePuck.LocalMute
         private static readonly List<KeyValuePair<string, CustomEmojiAsset>> _primaryTokens = new List<KeyValuePair<string, CustomEmojiAsset>>();
         private static readonly Regex TokenRegex = new Regex(@":[a-zA-Z0-9_\-]+:", RegexOptions.Compiled);
         private static bool _loaded;
+
+        // URL emojis from links.txt waiting to be downloaded (SprayMod-style "Name = url" lines).
+        // Drained by PumpPendingDownloads from LocalMuteRunner.Update once a coroutine host exists.
+        private static readonly List<KeyValuePair<string, string>> _pendingDownloads = new List<KeyValuePair<string, string>>(); // url -> cachePath
 
         /// <summary>One entry per loaded custom emoji file: (insertToken, thumbnail texture).</summary>
         public static List<KeyValuePair<string, Texture2D>> GetPickerItems()
@@ -237,7 +242,151 @@ namespace PoncePuck.LocalMute
                 }
             }
 
-            Debug.Log($"[CustomEmoji] Loaded {_emojiByToken.Count} custom emoji aliases");
+            try { LoadLinkEmojis(); }
+            catch (Exception ex) { Debug.LogWarning($"[CustomEmoji] links.txt load failed: {ex.Message}"); }
+
+            Debug.Log($"[CustomEmoji] Loaded {_emojiByToken.Count} custom emoji aliases ({_pendingDownloads.Count} link downloads pending)");
+        }
+
+        // ------------------------------------------------------------------
+        // URL-backed emojis (SprayMod-style): a links.txt in any emoji folder,
+        // one entry per line, either "name = https://..." or a bare URL.
+        // Downloads are cached on disk so each link is fetched only once.
+        // ------------------------------------------------------------------
+        private static string GetCacheDir()
+        {
+            string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            return Path.Combine(gameDir, "config", "ModHub", "PlayerQoL", "EmojiCache");
+        }
+
+        private static void LoadLinkEmojis()
+        {
+            bool sawAnyLinksFile = false;
+
+            foreach (string root in GetSearchRoots())
+            {
+                string linksPath = Path.Combine(root, "links.txt");
+                if (!File.Exists(linksPath))
+                    continue;
+
+                sawAnyLinksFile = true;
+                foreach (string rawLine in File.ReadAllLines(linksPath))
+                {
+                    string line = rawLine.Trim();
+                    if (line.Length == 0 || line.StartsWith("#") || line.StartsWith("//"))
+                        continue;
+
+                    string name = null, url = line;
+                    int eq = line.IndexOf('=');
+                    if (eq > 0)
+                    {
+                        name = line.Substring(0, eq).Trim();
+                        url = line.Substring(eq + 1).Trim();
+                    }
+
+                    if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                        !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    QueueLinkEmoji(name, url);
+                }
+            }
+
+            // First run convenience: drop a commented template next to the image emojis.
+            if (!sawAnyLinksFile)
+            {
+                try
+                {
+                    string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+                    string dir = Path.Combine(gameDir, "Plugins", "PlayerQoL", "Emojis");
+                    Directory.CreateDirectory(dir);
+                    File.WriteAllText(Path.Combine(dir, "links.txt"),
+                        "# Custom emoji links - one per line, same style as SprayMod:\n" +
+                        "#   name = https://example.com/image.png\n" +
+                        "#   https://example.com/other.gif   (name taken from the file name)\n" +
+                        "# Supported: png, jpg, gif (animated gifs work). Downloads are cached.\n");
+                }
+                catch { }
+            }
+        }
+
+        private static void QueueLinkEmoji(string name, string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+
+                string ext = Path.GetExtension(uri.AbsolutePath).ToLowerInvariant();
+                if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".gif")
+                    ext = ".png"; // LoadImage copes with png/jpg; unknown types most often resolve to png
+
+                if (string.IsNullOrWhiteSpace(name))
+                    name = Path.GetFileNameWithoutExtension(uri.AbsolutePath);
+
+                string normalized = NormalizeName(name);
+                if (string.IsNullOrEmpty(normalized))
+                    return;
+
+                string cachePath = Path.Combine(GetCacheDir(), normalized + ext);
+                if (File.Exists(cachePath))
+                {
+                    RegisterFromFile(cachePath); // cached from a previous session
+                    return;
+                }
+
+                _pendingDownloads.Add(new KeyValuePair<string, string>(url, cachePath));
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[CustomEmoji] Bad link entry '{url}': {ex.Message}");
+            }
+        }
+
+        /// <summary>Start queued link downloads. Called from LocalMuteRunner.Update so a
+        /// coroutine host is guaranteed; no-op when the queue is empty.</summary>
+        public static void PumpPendingDownloads()
+        {
+            if (_pendingDownloads.Count == 0 || LocalMuteRunner.Instance == null)
+                return;
+
+            var batch = _pendingDownloads.ToList();
+            _pendingDownloads.Clear();
+            foreach (var kv in batch)
+                LocalMuteRunner.Run(DownloadEmoji(kv.Key, kv.Value));
+        }
+
+        private static IEnumerator DownloadEmoji(string url, string cachePath)
+        {
+            using (var req = UnityWebRequest.Get(url))
+            {
+                req.timeout = 25;
+                yield return req.SendWebRequest();
+
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogWarning($"[CustomEmoji] Download failed: {req.error} ({url})");
+                    yield break;
+                }
+
+                byte[] bytes = req.downloadHandler.data;
+                if (bytes == null || bytes.Length == 0)
+                {
+                    Debug.LogWarning($"[CustomEmoji] Link returned no data: {url}");
+                    yield break;
+                }
+
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
+                    File.WriteAllBytes(cachePath, bytes);
+                    RegisterFromFile(cachePath);
+                    Debug.Log($"[CustomEmoji] Downloaded {Path.GetFileName(cachePath)} from {url}");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[CustomEmoji] Failed caching '{url}': {ex.Message}");
+                }
+            }
         }
 
         private static IEnumerable<string> GetSearchRoots()
@@ -265,7 +414,9 @@ namespace PoncePuck.LocalMute
                 // Pick the cleanest token as the picker-facing name (drop "2579-" style ID prefixes).
                 string primary = Regex.Replace(normalized, @"^\d+[_-]*", string.Empty);
                 if (string.IsNullOrWhiteSpace(primary)) primary = normalized;
-                _primaryTokens.Add(new KeyValuePair<string, CustomEmojiAsset>($":{primary}:", asset));
+                string primaryToken = $":{primary}:";
+                if (!_primaryTokens.Any(kv => string.Equals(kv.Key, primaryToken, StringComparison.OrdinalIgnoreCase)))
+                    _primaryTokens.Add(new KeyValuePair<string, CustomEmojiAsset>(primaryToken, asset));
             }
             catch (Exception ex)
             {
