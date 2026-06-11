@@ -35,6 +35,25 @@ namespace PoncePuck.LocalMute
         // Drained by PumpPendingDownloads from LocalMuteRunner.Update once a coroutine host exists.
         private static readonly List<KeyValuePair<string, string>> _pendingDownloads = new List<KeyValuePair<string, string>>(); // url -> cachePath
 
+        // Default emoji set shipped with the mod - same set and hosting as SprayMod's
+        // default sprays (config/default_sprays.json), so fresh installs get a working
+        // Custom tab with zero setup. Seeded into links.txt on first run only; users
+        // can delete lines they don't want and they won't come back.
+        private static readonly KeyValuePair<string, string>[] DefaultLinkEmojis = new[]
+        {
+            new KeyValuePair<string, string>("cronchycat",     "https://files.catbox.moe/55gz6v.gif"),
+            new KeyValuePair<string, string>("cat-yipee",      "https://files.catbox.moe/a194zv.gif"),
+            new KeyValuePair<string, string>("thevoices",      "https://files.catbox.moe/jzaaeh.gif"),
+            new KeyValuePair<string, string>("bocchioverload", "https://files.catbox.moe/wdzwr7.gif"),
+            new KeyValuePair<string, string>("catJAM",         "https://files.catbox.moe/6xy3ks.gif"),
+            new KeyValuePair<string, string>("anyayay",        "https://files.catbox.moe/xksm7t.gif"),
+            new KeyValuePair<string, string>("dead",           "https://files.catbox.moe/n2yn0e.gif"),
+            new KeyValuePair<string, string>("huh",            "https://files.catbox.moe/4d0k8y.gif"),
+            new KeyValuePair<string, string>("plink",          "https://files.catbox.moe/gr6t6v.gif"),
+            new KeyValuePair<string, string>("verycat",        "https://files.catbox.moe/qtr3dp.gif"),
+            new KeyValuePair<string, string>("catkiss",        "https://files.catbox.moe/g5pw76.gif")
+        };
+
         /// <summary>One entry per loaded custom emoji file: (insertToken, thumbnail texture).</summary>
         public static List<KeyValuePair<string, Texture2D>> GetPickerItems()
         {
@@ -292,7 +311,7 @@ namespace PoncePuck.LocalMute
                 }
             }
 
-            // First run convenience: drop a commented template next to the image emojis.
+            // First run: write links.txt seeded with the default emoji set and load it now.
             if (!sawAnyLinksFile)
             {
                 try
@@ -300,13 +319,25 @@ namespace PoncePuck.LocalMute
                     string gameDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
                     string dir = Path.Combine(gameDir, "Plugins", "PlayerQoL", "Emojis");
                     Directory.CreateDirectory(dir);
-                    File.WriteAllText(Path.Combine(dir, "links.txt"),
-                        "# Custom emoji links - one per line, same style as SprayMod:\n" +
-                        "#   name = https://example.com/image.png\n" +
-                        "#   https://example.com/other.gif   (name taken from the file name)\n" +
-                        "# Supported: png, jpg, gif (animated gifs work). Downloads are cached.\n");
+
+                    var sb = new StringBuilder();
+                    sb.AppendLine("# Custom emoji links - one per line, same style as SprayMod:");
+                    sb.AppendLine("#   name = https://example.com/image.png");
+                    sb.AppendLine("#   https://example.com/other.gif   (name taken from the file name)");
+                    sb.AppendLine("# Supported: png, jpg, gif (animated gifs work). Downloads are cached.");
+                    sb.AppendLine("# Delete lines you don't want - this file is only created once.");
+                    sb.AppendLine();
+                    foreach (var kv in DefaultLinkEmojis)
+                        sb.AppendLine($"{kv.Key} = {kv.Value}");
+                    File.WriteAllText(Path.Combine(dir, "links.txt"), sb.ToString());
+
+                    foreach (var kv in DefaultLinkEmojis)
+                        QueueLinkEmoji(kv.Key, kv.Value);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[CustomEmoji] Failed seeding default links.txt: {ex.Message}");
+                }
             }
         }
 
@@ -327,14 +358,25 @@ namespace PoncePuck.LocalMute
                 if (string.IsNullOrEmpty(normalized))
                     return;
 
-                string cachePath = Path.Combine(GetCacheDir(), normalized + ext);
-                if (File.Exists(cachePath))
-                {
-                    RegisterFromFile(cachePath); // cached from a previous session
+                // A local image file with the same name already provides this emoji -
+                // don't waste a download (files are scanned before links).
+                if (_emojiByToken.ContainsKey($":{normalized}:"))
                     return;
+
+                // Cached from a previous session? The stored extension may differ from the
+                // URL's (DownloadEmoji corrects it from the image magic bytes), so try all.
+                string cacheDir = GetCacheDir();
+                foreach (string knownExt in new[] { ext, ".png", ".gif", ".jpg", ".jpeg" })
+                {
+                    string candidate = Path.Combine(cacheDir, normalized + knownExt);
+                    if (File.Exists(candidate))
+                    {
+                        RegisterFromFile(candidate);
+                        return;
+                    }
                 }
 
-                _pendingDownloads.Add(new KeyValuePair<string, string>(url, cachePath));
+                _pendingDownloads.Add(new KeyValuePair<string, string>(url, Path.Combine(cacheDir, normalized + ext)));
             }
             catch (Exception ex)
             {
@@ -346,13 +388,31 @@ namespace PoncePuck.LocalMute
         /// coroutine host is guaranteed; no-op when the queue is empty.</summary>
         public static void PumpPendingDownloads()
         {
-            if (_pendingDownloads.Count == 0 || LocalMuteRunner.Instance == null)
+            if (LocalMuteRunner.Instance == null)
+                return;
+
+            // Kick the one-time emoji load here (flag-guarded) so first-run seeding and
+            // default downloads happen at startup, not on the first chat message.
+            EnsureLoaded();
+
+            if (_pendingDownloads.Count == 0)
                 return;
 
             var batch = _pendingDownloads.ToList();
             _pendingDownloads.Clear();
             foreach (var kv in batch)
                 LocalMuteRunner.Run(DownloadEmoji(kv.Key, kv.Value));
+        }
+
+        /// <summary>Image type from magic bytes - the only trustworthy signal for a download
+        /// (URLs can lack extensions and error pages arrive with HTTP 200).</summary>
+        private static string DetectImageExtension(byte[] b)
+        {
+            if (b == null || b.Length < 4) return null;
+            if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return ".png";
+            if (b[0] == (byte)'G' && b[1] == (byte)'I' && b[2] == (byte)'F') return ".gif";
+            if (b[0] == 0xFF && b[1] == 0xD8) return ".jpg";
+            return null;
         }
 
         private static IEnumerator DownloadEmoji(string url, string cachePath)
@@ -375,8 +435,18 @@ namespace PoncePuck.LocalMute
                     yield break;
                 }
 
+                // Never cache non-image payloads (hosts return HTML error pages with HTTP 200);
+                // a cached junk file would block re-downloading forever.
+                string realExt = DetectImageExtension(bytes);
+                if (realExt == null)
+                {
+                    Debug.LogWarning($"[CustomEmoji] Link is not a png/gif/jpg image, skipped: {url}");
+                    yield break;
+                }
+
                 try
                 {
+                    cachePath = Path.ChangeExtension(cachePath, realExt);
                     Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
                     File.WriteAllBytes(cachePath, bytes);
                     RegisterFromFile(cachePath);
