@@ -81,9 +81,48 @@ namespace PoncePuck.LocalMute
             if (root != null && !ReferenceEquals(_hookedRoot, root))
             {
                 root.RegisterCallback<PointerDownEvent>(OnRootPointerDown, TrickleDown.TrickleDown);
+                // Esc closes the picker first (chat stays open); next Esc closes chat as usual.
+                // Esc surfaces both as KeyDown and NavigationCancel - consume both at the root
+                // (trickle-down runs here before UIChat's own NavigationCancel handler).
+                root.RegisterCallback<KeyDownEvent>(OnRootKeyDown, TrickleDown.TrickleDown);
+                root.RegisterCallback<NavigationCancelEvent>(OnRootNavCancel, TrickleDown.TrickleDown);
                 _hookedRoot = root;
                 Debug.Log("[EmojiPicker] Right-click handler attached to chat panel root.");
             }
+        }
+
+        private static bool PopupVisible => _popup != null && _popup.style.display == DisplayStyle.Flex;
+
+        // Frame stamp of the Esc press that closed the picker: the same press fires both
+        // KeyDown and NavigationCancel, and both must be swallowed or chat closes anyway.
+        private static int _escConsumedFrame = -1;
+
+        private static void OnRootKeyDown(KeyDownEvent evt)
+        {
+            if (evt.keyCode != KeyCode.Escape) return;
+            HandleEscape(evt);
+        }
+
+        private static void OnRootNavCancel(NavigationCancelEvent evt)
+        {
+            HandleEscape(evt);
+        }
+
+        private static void HandleEscape(EventBase evt)
+        {
+            if (PopupVisible)
+            {
+                Hide();
+                _escConsumedFrame = Time.frameCount;
+            }
+            else if (_escConsumedFrame != Time.frameCount)
+            {
+                return; // picker already closed and not by this press - let chat handle it
+            }
+
+            evt.StopPropagation();
+            evt.StopImmediatePropagation();
+            try { _field?.Focus(); } catch { }
         }
 
         private static void OnRootPointerDown(PointerDownEvent evt)

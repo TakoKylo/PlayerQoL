@@ -190,6 +190,15 @@ namespace PoncePuck.LocalMute
         public static bool IsTextMuted(ulong sid) => sid != 0 && Config.Text.Contains(sid);
         public static bool IsVoiceMuted(ulong sid) => sid != 0 && Config.Voice.Contains(sid);
 
+        /// <summary>True when the username matches a blocked player (used as a fallback for
+        /// chat messages that arrive without the sender's SteamID).</summary>
+        public static bool IsNameBlocked(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            return Config.BlockedPlayers.Any(p =>
+                string.Equals(p.playerName, name, StringComparison.OrdinalIgnoreCase));
+        }
+
         public static int GetVoiceVolume(ulong sid)
         {
             if (sid == 0) return 100;
@@ -730,9 +739,14 @@ namespace PoncePuck.LocalMute
                     return;
                 }
                 
-                Debug.Log($"[LocalMute] Found AddChatMessage, applying postfix patch...");
-                h.Patch(m, postfix: new HarmonyMethod(typeof(LocalMuteClientMod), nameof(Chat_AddMessage_Postfix)));
-                Debug.Log("[LocalMute] Successfully patched UIChat.AddChatMessage (for @mention highlighting)");
+                Debug.Log($"[LocalMute] Found AddChatMessage, applying patches...");
+                // Prefix: last-line text-mute enforcement at the UI level (suppresses muted/blocked
+                // senders even when the ChatManager RPC-level prefix doesn't catch the message,
+                // e.g. server mods that relay chat without the sender's SteamID).
+                h.Patch(m,
+                    prefix: new HarmonyMethod(typeof(LocalMuteClientMod), nameof(Chat_AddMessage_Prefix)),
+                    postfix: new HarmonyMethod(typeof(LocalMuteClientMod), nameof(Chat_AddMessage_Postfix)));
+                Debug.Log("[LocalMute] Successfully patched UIChat.AddChatMessage (mute filter + @mention highlighting)");
             }
             catch (Exception e) { Debug.LogError("[LocalMute] Patch_Chat_AddMessage failed: " + e); }
         }
@@ -779,7 +793,10 @@ namespace PoncePuck.LocalMute
                 {
                     var sidStr = chatMessage.SteamID.Value.ToString();
                     if (ulong.TryParse(sidStr, out var sid) && LocalMuteStore.IsTextMuted(sid))
+                    {
+                        Debug.Log($"[LocalMute] Suppressed chat RPC from muted SteamID {sid}");
                         return false;
+                    }
                 }
                 return true;
             }
@@ -787,8 +804,40 @@ namespace PoncePuck.LocalMute
         }
 
         
+        // Prefix patch for UIChat.AddChatMessage - last line of defence for text mutes.
+        // Returning false skips the original, so the message never gets a chat row.
+        public static bool Chat_AddMessage_Prefix(ChatMessage chatMessage)
+        {
+            try
+            {
+                if (chatMessage.IsSystem) return true;
+
+                // Primary: suppress by SteamID (normal player messages carry the sender's id).
+                if (chatMessage.SteamID.HasValue)
+                {
+                    var sidStr = chatMessage.SteamID.Value.ToString();
+                    if (ulong.TryParse(sidStr, out var sid) && LocalMuteStore.IsTextMuted(sid))
+                    {
+                        Debug.Log($"[LocalMute] Suppressed chat row from muted SteamID {sid}");
+                        return false;
+                    }
+                }
+
+                // Fallback: suppress by username for messages relayed without a SteamID
+                // (some server mods rebroadcast player chat themselves).
+                string uname = chatMessage.Username.ToString();
+                if (!string.IsNullOrEmpty(uname) && LocalMuteStore.IsNameBlocked(uname))
+                {
+                    Debug.Log($"[LocalMute] Suppressed chat row from blocked name '{uname}'");
+                    return false;
+                }
+            }
+            catch (Exception e) { Debug.LogError("[LocalMute] Chat_AddMessage_Prefix error: " + e); }
+            return true;
+        }
+
         // Postfix patch for UIChat.AddChatMessage - processes @mentions, kaomoji, and enables rich text
-        // B310: AddChatMessage(ChatMessage, Units, bool) 
+        // B310: AddChatMessage(ChatMessage, Units, bool)
         public static void Chat_AddMessage_Postfix(UIChat __instance, ChatMessage chatMessage)
         {
             try
@@ -1001,7 +1050,8 @@ namespace PoncePuck.LocalMute
         {
             try
             {
-                var player = __instance ? __instance.GetComponent<Player>() : null;
+                // Recorder may sit on a child of the Player object, so search upwards too.
+                var player = __instance ? (__instance.GetComponent<Player>() ?? __instance.GetComponentInParent<Player>()) : null;
                 ulong steam = RosterSnapshot.GetSteamId(player);
                 
                 // Track voice activity for indicators
