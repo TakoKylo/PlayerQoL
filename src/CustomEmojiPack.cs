@@ -78,9 +78,12 @@ namespace PoncePuck.LocalMute
             if (row == null)
                 return false;
 
-            // Collect matches in order; bail early if none of the tokens are custom emoji.
-            var orderedMatches = CollectOrderedMatches(sourceText);
-            if (orderedMatches.Count == 0)
+            // Split into text/icon segments with rich-text tags kept balanced, so a
+            // token sitting inside <color=…>…</color> (a team-coloured username) or
+            // after a <size=70%> role tag doesn't sever that markup. Bail if no icon.
+            var segments = BuildSegments(sourceText);
+            bool hasIcon = segments.Exists(s => s.Asset != null);
+            if (!hasIcon)
                 return false;
 
             // Remove any previous inline wrapper we created for this row.
@@ -105,7 +108,10 @@ namespace PoncePuck.LocalMute
             var wrapper = new VisualElement { name = "ponce_emoji_wrapper" };
             wrapper.style.flexDirection = FlexDirection.Row;
             wrapper.style.flexWrap = Wrap.Wrap;
-            wrapper.style.alignItems = Align.Center;
+            // Bottom-align so a smaller-font run (e.g. a role tag rendered at
+            // <size=70%>) shares the baseline with the full-size name rather than
+            // floating high inside its own box.
+            wrapper.style.alignItems = Align.FlexEnd;
             wrapper.style.flexGrow = 1;
             wrapper.style.flexShrink = 1;
 
@@ -118,18 +124,13 @@ namespace PoncePuck.LocalMute
             label.style.minHeight = 0;
             label.style.overflow = Overflow.Hidden;
 
-            // Build interleaved Label + Image children from the parsed segments.
-            int cursor = 0;
-            foreach (var (start, end, asset) in orderedMatches)
+            foreach (var seg in segments)
             {
-                if (start > cursor)
-                    wrapper.Add(MakeSegmentLabel(label, sourceText.Substring(cursor, start - cursor)));
-
-                wrapper.Add(MakeEmojiImage(asset));
-                cursor = end;
+                if (seg.Asset != null)
+                    wrapper.Add(MakeEmojiImage(seg.Asset));
+                else if (!string.IsNullOrEmpty(seg.Text))
+                    wrapper.Add(MakeSegmentLabel(label, seg.Text));
             }
-            if (cursor < sourceText.Length)
-                wrapper.Add(MakeSegmentLabel(label, sourceText.Substring(cursor)));
 
             // Add the original (now hidden) label as the last child so the tween target stays valid.
             label.RemoveFromHierarchy();
@@ -141,17 +142,102 @@ namespace PoncePuck.LocalMute
             return true;
         }
 
-        private static List<(int start, int end, CustomEmojiAsset asset)> CollectOrderedMatches(string text)
+        private struct EmojiSeg { public string Text; public CustomEmojiAsset Asset; }
+
+        // Walk the text into text/icon segments, keeping each text segment's rich
+        // text tags balanced. When a token sits inside open tags (e.g. a username's
+        // <color=…>), the tags are closed before the icon and reopened after, so the
+        // colour/size markup survives the split instead of being severed.
+        private static List<EmojiSeg> BuildSegments(string text)
         {
-            var result = new List<(int, int, CustomEmojiAsset)>();
-            foreach (Match m in TokenRegex.Matches(text))
+            var segs = new List<EmojiSeg>();
+            var open = new List<string>();   // currently-open opening tags, verbatim
+            var sb = new StringBuilder();
+            int i = 0, n = text.Length;
+
+            while (i < n)
             {
-                if (_emojiByToken.TryGetValue(m.Value, out var asset))
-                    result.Add((m.Index, m.Index + m.Length, asset));
-                else if (TryGetKaomojiAsset(m.Value, out var kaomoji))
-                    result.Add((m.Index, m.Index + m.Length, kaomoji));
+                char c = text[i];
+
+                if (c == ':')
+                {
+                    Match m = TokenRegex.Match(text, i);
+                    if (m.Success && m.Index == i)
+                    {
+                        CustomEmojiAsset asset = null;
+                        if (_emojiByToken.TryGetValue(m.Value, out var a)) asset = a;
+                        else if (TryGetKaomojiAsset(m.Value, out var k)) asset = k;
+
+                        if (asset != null)
+                        {
+                            AppendClosingTags(sb, open);
+                            segs.Add(new EmojiSeg { Text = sb.ToString() });
+                            segs.Add(new EmojiSeg { Asset = asset });
+                            sb.Length = 0;
+                            foreach (var t in open) sb.Append(t);
+                            i += m.Length;
+                            if (i < n && text[i] == ' ') { sb.Append(' '); i++; } // keep the icon→word gap
+                            continue;
+                        }
+                    }
+                    sb.Append(c); i++; continue;
+                }
+
+                if (c == '<')
+                {
+                    int gt = text.IndexOf('>', i);
+                    if (gt < 0) { sb.Append(c); i++; continue; }
+                    string tag = text.Substring(i, gt - i + 1);
+                    TrackTag(tag, open);
+                    sb.Append(tag);
+                    i = gt + 1;
+                    continue;
+                }
+
+                sb.Append(c); i++;
             }
-            return result;
+
+            segs.Add(new EmojiSeg { Text = sb.ToString() });
+            return segs;
+        }
+
+        private static void TrackTag(string tag, List<string> open)
+        {
+            if (tag.Length < 3) return;
+            if (tag.StartsWith("</", StringComparison.Ordinal))
+            {
+                string name = TagName(tag.Substring(2));
+                for (int k = open.Count - 1; k >= 0; k--)
+                {
+                    if (string.Equals(TagName(open[k].Substring(1)), name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        open.RemoveAt(k);
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                open.Add(tag);
+            }
+        }
+
+        private static void AppendClosingTags(StringBuilder sb, List<string> open)
+        {
+            for (int k = open.Count - 1; k >= 0; k--)
+                sb.Append("</").Append(TagName(open[k].Substring(1))).Append('>');
+        }
+
+        // "color=#fff>" / "color>" / "b>" -> "color" / "b"
+        private static string TagName(string afterAngle)
+        {
+            int end = afterAngle.Length;
+            for (int k = 0; k < afterAngle.Length; k++)
+            {
+                char ch = afterAngle[k];
+                if (ch == '=' || ch == ' ' || ch == '>') { end = k; break; }
+            }
+            return afterAngle.Substring(0, end);
         }
 
         // Lazily render a kaomoji shortcode (e.g. :tableflip:, :kao_shrug:) to a texture and cache it.
@@ -181,6 +267,17 @@ namespace PoncePuck.LocalMute
                 lbl.AddToClassList(cls);
             lbl.style.flexShrink = 1;
             lbl.style.whiteSpace = WhiteSpace.Normal;
+            // Bottom-anchor so a smaller-font run (e.g. a <size=70%> role tag) shares
+            // the baseline with the full-size name beside it.
+            lbl.style.unityTextAlign = TextAnchor.LowerLeft;
+            // A smaller-font run (the role tag is <size=70%>) bottom-aligns to its own
+            // (smaller) descender, sitting ~descender-gap below the full-size name's
+            // baseline. Nudge it up by roughly that gap so the tag and name line up.
+            if (text.IndexOf("<size=", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                float fs = 0f; try { fs = template.resolvedStyle.fontSize; } catch { }
+                lbl.style.marginBottom = (fs > 1f ? fs : 16f) * 0.20f;
+            }
             return lbl;
         }
 
@@ -198,6 +295,9 @@ namespace PoncePuck.LocalMute
             image.style.marginLeft = 1f;
             image.style.marginRight = 1f;
             image.style.flexShrink = 0;
+            // Center the icon on the line even though the wrapper bottom-aligns text
+            // (so it doesn't sink to the line's descender and look too low).
+            image.style.alignSelf = Align.Center;
             image.image = tex;
             if (asset.IsAnimated)
                 LocalMuteRunner.Run(AnimateGif(image, asset));
@@ -263,6 +363,11 @@ namespace PoncePuck.LocalMute
 
             try { LoadLinkEmojis(); }
             catch (Exception ex) { Debug.LogWarning($"[CustomEmoji] links.txt load failed: {ex.Message}"); }
+
+            // Surface the custom scoreboard icons embedded in the UnifiedTagMod mod
+            // so its ":token:" badges (e.g. :poncewad:) render inline in chat here too.
+            try { LoadTagModIcons(); }
+            catch (Exception ex) { Debug.LogWarning($"[CustomEmoji] TagMod icon load failed: {ex.Message}"); }
 
             Debug.Log($"[CustomEmoji] Loaded {_emojiByToken.Count} custom emoji aliases ({_pendingDownloads.Count} link downloads pending)");
         }
@@ -548,6 +653,113 @@ namespace PoncePuck.LocalMute
             catch (Exception ex)
             {
                 Debug.LogWarning($"[CustomEmoji] Failed loading '{filePath}': {ex.Message}");
+            }
+        }
+
+        // Trim transparent padding so the artwork fills the emoji box (otherwise a
+        // padded icon renders smaller than expected). Sampled bbox; one-time.
+        private static Texture2D CropToOpaque(Texture2D tex)
+        {
+            try
+            {
+                int w = tex.width, h = tex.height;
+                if (w < 4 || h < 4) return tex;
+
+                var px = tex.GetPixels32();
+                int stepX = Mathf.Max(1, w / 256), stepY = Mathf.Max(1, h / 256);
+                int minX = w, minY = h, maxX = -1, maxY = -1;
+                for (int y = 0; y < h; y += stepY)
+                {
+                    int row = y * w;
+                    for (int x = 0; x < w; x += stepX)
+                    {
+                        if (px[row + x].a > 16)
+                        {
+                            if (x < minX) minX = x; if (x > maxX) maxX = x;
+                            if (y < minY) minY = y; if (y > maxY) maxY = y;
+                        }
+                    }
+                }
+                if (maxX < minX || maxY < minY) return tex;
+
+                minX = Mathf.Max(0, minX - stepX); minY = Mathf.Max(0, minY - stepY);
+                maxX = Mathf.Min(w - 1, maxX + stepX); maxY = Mathf.Min(h - 1, maxY + stepY);
+                int bw = maxX - minX + 1, bh = maxY - minY + 1;
+                if (bw >= w * 0.97f && bh >= h * 0.97f) return tex;
+
+                var cropPixels = tex.GetPixels(minX, minY, bw, bh);
+                var cropped = new Texture2D(bw, bh, TextureFormat.RGBA32, false)
+                { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+                cropped.SetPixels(cropPixels);
+                cropped.Apply(false, false);
+                UnityEngine.Object.Destroy(tex);
+                return cropped;
+            }
+            catch { return tex; }
+        }
+
+        // Load the custom scoreboard icons that the UnifiedTagMod (TagMod) mod
+        // embeds in its DLL ("UnifiedTagMod.assets.icons.<name>.png"), so its
+        // ":token:" badges render inline in chat the same as our own emojis.
+        // No-op when TagMod isn't loaded; a user emoji of the same name wins.
+        private static void LoadTagModIcons()
+        {
+            var asm = AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(a => a.GetName().Name == "UnifiedTagMod");
+            if (asm == null)
+                return;
+
+            const string prefix = "UnifiedTagMod.assets.icons.";
+            foreach (string res in asm.GetManifestResourceNames())
+            {
+                if (!res.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                if (!res.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string baseName = res.Substring(prefix.Length, res.Length - prefix.Length - ".png".Length);
+                string normalized = NormalizeName(baseName);
+                if (string.IsNullOrEmpty(normalized) || _emojiByToken.ContainsKey($":{normalized}:"))
+                    continue;
+
+                try
+                {
+                    byte[] bytes;
+                    using (var s = asm.GetManifestResourceStream(res))
+                    {
+                        if (s == null) continue;
+                        bytes = new byte[s.Length];
+                        int read = 0;
+                        while (read < bytes.Length)
+                        {
+                            int n = s.Read(bytes, read, bytes.Length - read);
+                            if (n <= 0) break;
+                            read += n;
+                        }
+                    }
+
+                    var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                    if (!texture.LoadImage(bytes, false))
+                    {
+                        UnityEngine.Object.Destroy(texture);
+                        continue;
+                    }
+                    texture.wrapMode = TextureWrapMode.Clamp;
+                    texture.filterMode = FilterMode.Bilinear;
+                    // TagMod's icons have transparent padding; crop to the artwork so
+                    // they fill the emoji box at the right visible size.
+                    texture = CropToOpaque(texture);
+                    var asset = new CustomEmojiAsset { StaticFrame = texture };
+
+                    AddAliases(normalized, asset);
+                    string primary = Regex.Replace(normalized, @"^\d+[_-]*", string.Empty);
+                    if (string.IsNullOrWhiteSpace(primary)) primary = normalized;
+                    string primaryToken = $":{primary}:";
+                    if (!_primaryTokens.Any(kv => string.Equals(kv.Key, primaryToken, StringComparison.OrdinalIgnoreCase)))
+                        _primaryTokens.Add(new KeyValuePair<string, CustomEmojiAsset>(primaryToken, asset));
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[CustomEmoji] Failed loading TagMod icon '{res}': {ex.Message}");
+                }
             }
         }
 
