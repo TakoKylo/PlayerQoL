@@ -610,15 +610,25 @@ namespace PoncePuck.Keybinds
             public string contentKey64 = string.Empty;
         }
 
-        // Sounds mod config structure
+        // Sounds mod config structure - must mirror EVERY serialized property of
+        // oomtm450PuckMod_Sounds.Configs.ClientConfig (V0.3.0), otherwise saving from
+        // our panel would silently reset fields we don't know about.
         [Serializable]
         public class SoundsModConfig
         {
             public bool LogInfo = true;
             public bool Music = true;
-            public float MusicVolume = 0.5f;
+            public float MusicVolume = 0.8f;
+            // New in Sounds V0.3.0: horn + per-music-type volumes (combined with MusicVolume)
+            public float HornVolume = 1f;
+            public float FaceoffMusicVolume = 1f;
+            public float WarmupMusicVolume = 1f;
+            public float GoalMusicVolume = 1f;
+            public float BetweenPeriodsMusicVolume = 1f;
+            public float GameOverMusicVolume = 1f;
             public bool CustomGoalHorns = true;
-            public bool WarmupMusic = false;
+            public bool WarmupMusic = true;
+            public bool UseServerPerMusicVolume = true;
         }
 
         // Read sounds config from the mod's JSON file
@@ -705,6 +715,10 @@ namespace PoncePuck.Keybinds
                                     var warmupMusicProp = clientConfigType.GetProperty("WarmupMusic");
                                     float musicVol = musicVolProp != null ? (float)musicVolProp.GetValue(newConfig) : 0.8f;
                                     bool newWarmupMusic = warmupMusicProp != null ? (bool)warmupMusicProp.GetValue(newConfig) : true;
+
+                                    // Per-music-type volumes only exist on Sounds V0.3.0+
+                                    var warmupTypeVolProp = clientConfigType.GetProperty("WarmupMusicVolume");
+                                    float warmupTypeVol = warmupTypeVolProp != null ? (float)warmupTypeVolProp.GetValue(newConfig) : 1f;
                                     
                                     // Find _soundsSystem field
                                     var soundsSystemField = soundsType.GetField("_soundsSystem", 
@@ -721,10 +735,13 @@ namespace PoncePuck.Keybinds
                                         {
                                             var soundsSystemType = soundsSystem.GetType();
                                             
-                                            // Apply volume change
-                                            var changeMusicVolMethod = soundsSystemType.GetMethod("ChangeMusicVolume",
+                                            // Apply volume change - Sounds V0.3.0 renamed
+                                            // ChangeMusicVolume(float) to ChangeVolume(float)
+                                            var changeMusicVolMethod = soundsSystemType.GetMethod("ChangeVolume",
+                                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)
+                                                ?? soundsSystemType.GetMethod("ChangeMusicVolume",
                                                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-                                            
+
                                             if (changeMusicVolMethod != null)
                                             {
                                                 changeMusicVolMethod.Invoke(soundsSystem, new object[] { musicVol });
@@ -760,13 +777,31 @@ namespace PoncePuck.Keybinds
                                                         }
                                                         else if (!oldWarmupMusic && newWarmupMusic)
                                                         {
-                                                            // Warmup was off, now on - start the music
-                                                            var playMethod = soundsSystemType.GetMethod("Play",
+                                                            // Warmup was off, now on - start the music.
+                                                            // Sounds V0.3.0: Play(name, type, vol, delay, loop) - vol is
+                                                            // absolute for music (MusicVolume * WarmupMusicVolume).
+                                                            var playMethod5 = soundsSystemType.GetMethod("Play",
                                                                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
                                                                 null,
-                                                                new Type[] { typeof(string), typeof(string), typeof(float), typeof(bool) },
+                                                                new Type[] { typeof(string), typeof(string), typeof(float), typeof(float), typeof(bool) },
                                                                 null);
-                                                            playMethod?.Invoke(soundsSystem, new object[] { currentMusic, "Music", 0f, true });
+                                                            // NOTE: type string must be "music" (Codebase.SoundsSystem.MUSIC
+                                                            // is lowercase) or Play treats it as a one-shot sound and the
+                                                            // music volume no longer applies to it.
+                                                            if (playMethod5 != null)
+                                                            {
+                                                                playMethod5.Invoke(soundsSystem, new object[] { currentMusic, "music", musicVol * warmupTypeVol, 0f, true });
+                                                            }
+                                                            else
+                                                            {
+                                                                // Pre-V0.3.0: Play(name, type, delay, loop)
+                                                                var playMethod4 = soundsSystemType.GetMethod("Play",
+                                                                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+                                                                    null,
+                                                                    new Type[] { typeof(string), typeof(string), typeof(float), typeof(bool) },
+                                                                    null);
+                                                                playMethod4?.Invoke(soundsSystem, new object[] { currentMusic, "music", 0f, true });
+                                                            }
                                                             Debug.Log("[PPKB] Started warmup music (toggle turned on)");
                                                         }
                                                     }
@@ -777,6 +812,37 @@ namespace PoncePuck.Keybinds
                                         {
                                             Debug.Log("[PPKB] _soundsSystem is null (no music playing?)");
                                         }
+                                    }
+
+                                    // Hot-apply horn volume (Sounds V0.3.0+) - mirrors the /hornvol
+                                    // command: static ChangeHornsVolume on the mod's SoundsSystem.
+                                    var hornVolProp = clientConfigType.GetProperty("HornVolume");
+                                    if (hornVolProp != null)
+                                    {
+                                        try
+                                        {
+                                            // Prefer the _soundsSystem field's declared type (robust even when the
+                                            // instance is null and to any future namespace change); fall back to name.
+                                            var staticSsType = soundsSystemField?.FieldType
+                                                ?? asm.GetType("oomtm450PuckMod_Sounds.SoundsSystem");
+                                            var getHornsMethod = staticSsType?.GetMethod("GetHornsAudioSource",
+                                                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                                            var changeHornsMethod = staticSsType?.GetMethod("ChangeHornsVolume",
+                                                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                                            if (getHornsMethod != null && changeHornsMethod != null)
+                                            {
+                                                object horns = getHornsMethod.Invoke(null, new object[] { null });
+                                                var blueHorn = horns?.GetType().GetField("Item1")?.GetValue(horns) as AudioSource;
+                                                var redHorn = horns?.GetType().GetField("Item2")?.GetValue(horns) as AudioSource;
+                                                if (blueHorn != null && redHorn != null)
+                                                {
+                                                    float hornVol = (float)hornVolProp.GetValue(newConfig);
+                                                    changeHornsMethod.Invoke(null, new object[] { hornVol, new List<AudioSource> { blueHorn, redHorn } });
+                                                    Debug.Log($"[PPKB] Applied horn volume: {hornVol}");
+                                                }
+                                            }
+                                        }
+                                        catch { /* horns not in scene yet - applies on next game */ }
                                     }
                                 }
                                 return;

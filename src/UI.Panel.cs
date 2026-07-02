@@ -272,6 +272,9 @@ namespace PoncePuck.Keybinds
             {
                 _nextPositionCheck = Time.unscaledTime + 0.5f;
                 RefreshSuppression();
+                // Pick up external edits to the Sounds config (e.g. the Sounds mod's
+                // own /musicvol, /hornvol chat commands) and mirror them into our panel.
+                CheckAndReloadSoundsConfig();
             }
         }
         
@@ -464,26 +467,18 @@ namespace PoncePuck.Keybinds
                     Directory.CreateDirectory(playerQoLDir);
                     AtomicWrite(cmdPath, JsonUtility.ToJson(_cmd, true));
                     
-                    // Update the UI sliders if the panel is open
+                    // Update the UI sliders if the panel is open (setting .value fires the
+                    // row callbacks, which re-save identical values - harmless one-shot)
                     if (_ppkbPanel != null && _ppkbPanel.style.display == DisplayStyle.Flex)
                     {
-                        var settingsPanel = _ppkbPanel.Q("settings-panel");
-                        if (settingsPanel != null)
-                        {
-                            // Update SOUNDS VOLUME slider
-                            var soundsVolumeSlider = settingsPanel.Q<Slider>("sounds-volume-slider");
-                            if (soundsVolumeSlider != null)
-                            {
-                                soundsVolumeSlider.value = soundsConfig.MusicVolume;
-                            }
-
-                            // Update WARMUP MUSIC toggle
-                            var warmupMusicToggle = settingsPanel.Q<Toggle>("warmup-music-toggle");
-                            if (warmupMusicToggle != null)
-                            {
-                                warmupMusicToggle.value = soundsConfig.WarmupMusic;
-                            }
-                        }
+                        if (_settingsMusicVolSlider != null) _settingsMusicVolSlider.value = soundsConfig.MusicVolume;
+                        if (_settingsHornVolSlider != null) _settingsHornVolSlider.value = soundsConfig.HornVolume;
+                        if (_settingsFaceoffVolSlider != null) _settingsFaceoffVolSlider.value = soundsConfig.FaceoffMusicVolume;
+                        if (_settingsWarmupVolSlider != null) _settingsWarmupVolSlider.value = soundsConfig.WarmupMusicVolume;
+                        if (_settingsGoalVolSlider != null) _settingsGoalVolSlider.value = soundsConfig.GoalMusicVolume;
+                        if (_settingsBetweenPeriodsVolSlider != null) _settingsBetweenPeriodsVolSlider.value = soundsConfig.BetweenPeriodsMusicVolume;
+                        if (_settingsGameOverVolSlider != null) _settingsGameOverVolSlider.value = soundsConfig.GameOverMusicVolume;
+                        if (_warmupMusicToggle != null) _warmupMusicToggle.value = soundsConfig.WarmupMusic;
                     }
 
                     Debug.Log($"[PPKB] Sounds config externally modified, updated local config and UI");

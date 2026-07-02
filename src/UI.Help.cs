@@ -14,6 +14,14 @@ namespace PoncePuck.Keybinds
         private UITK.Slider _settingsMusicVolSlider;
         private UITK.Label _settingsMusicVolVal;
 
+        // Sounds V0.3.0 per-type volume sliders (synced by CheckAndReloadSoundsConfig)
+        private UITK.Slider _settingsHornVolSlider;
+        private UITK.Slider _settingsFaceoffVolSlider;
+        private UITK.Slider _settingsWarmupVolSlider;
+        private UITK.Slider _settingsGoalVolSlider;
+        private UITK.Slider _settingsBetweenPeriodsVolSlider;
+        private UITK.Slider _settingsGameOverVolSlider;
+
 #pragma warning disable CS0649, CS0169 // Fields assigned via out parameters and used in callbacks
         private UITK.Slider _panelAlphaSlider;
         private UITK.Toggle _warmupMusicToggle;
@@ -370,6 +378,9 @@ namespace PoncePuck.Keybinds
             // Editable value field (between label and slider)
             var valueField = new UITK.TextField();
             valueField.value = start.ToString("0.00");
+            // Commit on Enter/blur, not per keystroke - avoids saving partial values
+            // like "0." and prevents the field reverting while the user is mid-typing.
+            valueField.isDelayed = true;
             MakeReadable(valueField);
             valueField.style.minWidth = 65;
             valueField.style.maxWidth = 65;
@@ -400,7 +411,9 @@ namespace PoncePuck.Keybinds
                 if (float.TryParse(ev.newValue, out float newValue))
                 {
                     float clampedValue = Mathf.Clamp01(newValue);
-                    localSlider.SetValueWithoutNotify(clampedValue);
+                    // Notify (not SetValueWithoutNotify) so the slider's own change event
+                    // fires and any caller-registered save callback runs for typed input.
+                    localSlider.value = clampedValue;
                 }
             });
 
@@ -477,6 +490,41 @@ namespace PoncePuck.Keybinds
                     SaveSoundsConfig(config);
                 });
             }
+
+            // Sounds V0.3.0: horn + per-music-type volumes (per-type combines with MUSIC VOLUME)
+            UITK.Slider AddSoundsVolSlider(string label, float current, Action<SoundsModConfig, float> set)
+            {
+                UITK.Slider s;
+                _settingsSectionVE.Add(MakeSliderRow(label, current, out s, out _));
+                s.RegisterValueChangedCallback(ev =>
+                {
+                    var config = LoadSoundsConfig();
+                    set(config, Mathf.Clamp01(ev.newValue));
+                    SaveSoundsConfig(config);
+                });
+                return s;
+            }
+
+            _settingsHornVolSlider = AddSoundsVolSlider("HORN VOLUME", soundsConfig.HornVolume, (c, v) => c.HornVolume = v);
+            _settingsFaceoffVolSlider = AddSoundsVolSlider("FACEOFF VOLUME", soundsConfig.FaceoffMusicVolume, (c, v) => c.FaceoffMusicVolume = v);
+            _settingsWarmupVolSlider = AddSoundsVolSlider("WARMUP VOLUME", soundsConfig.WarmupMusicVolume, (c, v) => c.WarmupMusicVolume = v);
+            _settingsGoalVolSlider = AddSoundsVolSlider("GOAL VOLUME", soundsConfig.GoalMusicVolume, (c, v) => c.GoalMusicVolume = v);
+            _settingsBetweenPeriodsVolSlider = AddSoundsVolSlider("PERIOD BREAK VOLUME", soundsConfig.BetweenPeriodsMusicVolume, (c, v) => c.BetweenPeriodsMusicVolume = v);
+            _settingsGameOverVolSlider = AddSoundsVolSlider("GAME OVER VOLUME", soundsConfig.GameOverMusicVolume, (c, v) => c.GameOverMusicVolume = v);
+
+            // warmup music toggle - read from and write to sounds config
+            var warmupToggleRow = MakeToggleRow("WARMUP MUSIC", soundsConfig.WarmupMusic, on =>
+            {
+                _cmd.warmupmusic = on;
+
+                // Update sounds mod config
+                var config = LoadSoundsConfig();
+                config.WarmupMusic = on;
+                SaveSoundsConfig(config);
+            });
+            _settingsSectionVE.Add(warmupToggleRow);
+            _warmupMusicToggle = warmupToggleRow.Q<UITK.Toggle>();
+
                         // Arena Audio Volume slider (styled like other rows)
             var arenaAudioRow = MakeSliderRow("SCENERY VOLUME", _cmd.arenaAudioVolume, out var arenaAudioSlider, out var arenaAudioVal);
             arenaAudioSlider.lowValue = 0f;
@@ -500,19 +548,6 @@ namespace PoncePuck.Keybinds
                 SaveConfigsAndRefresh();
             });
             }
-                        // 2) warmup music toggle - read from and write to sounds config
-            var warmupToggleRow = MakeToggleRow("WARMUP MUSIC", soundsConfig.WarmupMusic, on => 
-            { 
-                _cmd.warmupmusic = on;
-                
-                // Update sounds mod config
-                var config = LoadSoundsConfig();
-                config.WarmupMusic = on;
-                SaveSoundsConfig(config);
-            });
-            _settingsSectionVE.Add(warmupToggleRow);
-            _warmupMusicToggle = warmupToggleRow.Q<UITK.Toggle>();
-
                         // Enable mention sound toggle
             var mentionSoundToggleRow = MakeToggleRow("MENTION SOUND", _cmd.mentionSoundEnabled, on => 
             { 
