@@ -667,11 +667,18 @@ namespace PoncePuck.Keybinds
             }
         }
         
-        // Try to reload the sounds mod's config at runtime via reflection
+        // Push our saved values into the Sounds mod's LIVE ClientConfig object (in place)
+        // and apply the runtime effects. We deliberately do NOT call the mod's ReadConfig():
+        // that re-Saves the file through the mod's own ClientConfig class, and an older Sounds
+        // build (pre-V0.3.0) doesn't know the new per-type volume properties - so its Save()
+        // would strip them straight back out of the file the instant we wrote them, which is
+        // why the new sliders "reset" right after being changed.
         private static void TryReloadSoundsModConfig()
         {
             try
             {
+                var ourConfig = LoadSoundsConfig();
+
                 // Find the sounds mod assembly
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                 {
@@ -682,14 +689,16 @@ namespace PoncePuck.Keybinds
                         if (soundsType != null)
                         {
                             // Get the ClientConfig static field
-                            var clientConfigField = soundsType.GetField("ClientConfig", 
+                            var clientConfigField = soundsType.GetField("ClientConfig",
                                 System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-                            
+
                             if (clientConfigField != null)
                             {
-                                // Get old config values before updating
+                                // The LIVE config object the mod is using - mutate it in place.
                                 var oldConfig = clientConfigField.GetValue(null);
-                                var clientConfigType = asm.GetType("oomtm450PuckMod_Sounds.Configs.ClientConfig");
+                                var clientConfigType = oldConfig?.GetType()
+                                    ?? asm.GetType("oomtm450PuckMod_Sounds.Configs.ClientConfig");
+
                                 bool oldWarmupMusic = true;
                                 if (oldConfig != null && clientConfigType != null)
                                 {
@@ -697,28 +706,41 @@ namespace PoncePuck.Keybinds
                                     if (warmupProp != null)
                                         oldWarmupMusic = (bool)warmupProp.GetValue(oldConfig);
                                 }
-                                
-                                // Read new config from file
-                                var readConfigMethod = clientConfigType?.GetMethod("ReadConfig", 
-                                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
-                                
-                                if (readConfigMethod != null)
-                                {
-                                    var newConfig = readConfigMethod.Invoke(null, null);
-                                    
-                                    // Update the static ClientConfig field
-                                    clientConfigField.SetValue(null, newConfig);
-                                    Debug.Log($"[PPKB] Updated Sounds.ClientConfig: {newConfig}");
-                                    
-                                    // Get values from new config
-                                    var musicVolProp = clientConfigType.GetProperty("MusicVolume");
-                                    var warmupMusicProp = clientConfigType.GetProperty("WarmupMusic");
-                                    float musicVol = musicVolProp != null ? (float)musicVolProp.GetValue(newConfig) : 0.8f;
-                                    bool newWarmupMusic = warmupMusicProp != null ? (bool)warmupMusicProp.GetValue(newConfig) : true;
 
-                                    // Per-music-type volumes only exist on Sounds V0.3.0+
-                                    var warmupTypeVolProp = clientConfigType.GetProperty("WarmupMusicVolume");
-                                    float warmupTypeVol = warmupTypeVolProp != null ? (float)warmupTypeVolProp.GetValue(newConfig) : 1f;
+                                if (clientConfigType != null)
+                                {
+                                    // Mirror each value onto the live object, but only for
+                                    // properties this build actually has (older builds skip the
+                                    // new ones). No file re-read, no Save() - nothing gets stripped.
+                                    void SetIfExists(string name, object value)
+                                    {
+                                        if (oldConfig == null) return;
+                                        var p = clientConfigType.GetProperty(name);
+                                        if (p != null && p.CanWrite)
+                                        {
+                                            try { p.SetValue(oldConfig, value); }
+                                            catch { /* type mismatch on some build - ignore */ }
+                                        }
+                                    }
+
+                                    SetIfExists("LogInfo", ourConfig.LogInfo);
+                                    SetIfExists("Music", ourConfig.Music);
+                                    SetIfExists("MusicVolume", ourConfig.MusicVolume);
+                                    SetIfExists("HornVolume", ourConfig.HornVolume);
+                                    SetIfExists("FaceoffMusicVolume", ourConfig.FaceoffMusicVolume);
+                                    SetIfExists("WarmupMusicVolume", ourConfig.WarmupMusicVolume);
+                                    SetIfExists("GoalMusicVolume", ourConfig.GoalMusicVolume);
+                                    SetIfExists("BetweenPeriodsMusicVolume", ourConfig.BetweenPeriodsMusicVolume);
+                                    SetIfExists("GameOverMusicVolume", ourConfig.GameOverMusicVolume);
+                                    SetIfExists("CustomGoalHorns", ourConfig.CustomGoalHorns);
+                                    SetIfExists("WarmupMusic", ourConfig.WarmupMusic);
+                                    SetIfExists("UseServerPerMusicVolume", ourConfig.UseServerPerMusicVolume);
+                                    Debug.Log("[PPKB] Updated live Sounds.ClientConfig in place");
+
+                                    // Values to apply at runtime (from what we just saved).
+                                    float musicVol = ourConfig.MusicVolume;
+                                    bool newWarmupMusic = ourConfig.WarmupMusic;
+                                    float warmupTypeVol = ourConfig.WarmupMusicVolume;
                                     
                                     // Find _soundsSystem field
                                     var soundsSystemField = soundsType.GetField("_soundsSystem", 
@@ -836,7 +858,7 @@ namespace PoncePuck.Keybinds
                                                 var redHorn = horns?.GetType().GetField("Item2")?.GetValue(horns) as AudioSource;
                                                 if (blueHorn != null && redHorn != null)
                                                 {
-                                                    float hornVol = (float)hornVolProp.GetValue(newConfig);
+                                                    float hornVol = ourConfig.HornVolume;
                                                     changeHornsMethod.Invoke(null, new object[] { hornVol, new List<AudioSource> { blueHorn, redHorn } });
                                                     Debug.Log($"[PPKB] Applied horn volume: {hornVol}");
                                                 }
