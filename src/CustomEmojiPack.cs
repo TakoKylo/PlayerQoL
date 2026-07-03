@@ -83,40 +83,34 @@ namespace PoncePuck.LocalMute
             if (orderedMatches.Count == 0)
                 return false;
 
-            // Remove any previous inline wrapper we created for this row.
-            for (int i = row.childCount - 1; i >= 0; i--)
+            // Remove any previous inline wrapper we built for this label (defensive; a row is
+            // normally processed once).
+            for (int i = label.childCount - 1; i >= 0; i--)
             {
-                if (row[i].name == "ponce_emoji_wrapper")
-                    row[i].RemoveFromHierarchy();
+                if (label[i] is VisualElement prev && prev.name == "ponce_emoji_wrapper")
+                    prev.RemoveFromHierarchy();
             }
 
-            // Find the label's slot in the parent so we can insert the wrapper at the same position.
-            int labelIdx = -1;
-            for (int i = 0; i < row.childCount; i++)
-            {
-                if (row[i] == label) { labelIdx = i; break; }
-            }
-            if (labelIdx < 0)
-                return false;
+            // b1117 rework: UIChat.AddChatMessage registers a GeometryChangedEvent ON THIS LABEL
+            // (OnRowGeometryChanged -> PinLabelHeight + RefreshContentAndScroll) to size the row
+            // and autoscroll, and UIChatMessage's expiry blur toggles the ".blurred" USS class on
+            // THIS LABEL. The old approach (detach the label into a sibling wrapper) broke both:
+            // the row never re-measured/scrolled and emoji messages never faded.
+            // Fix: keep the label in place, clear its text, and host the emoji content as the
+            // label's own children. The game's geometry callback then re-fires (empty text makes
+            // PinLabelHeight a no-op, RefreshContentAndScroll runs) and ".blurred" fades our content.
+            label.text = string.Empty;
+            label.style.flexDirection = FlexDirection.Row;
+            label.style.flexWrap = Wrap.Wrap;
+            label.style.alignItems = Align.Center;
+            label.style.height = StyleKeyword.Auto;   // let the row grow to the emoji content
 
-            // Build a flex-row wrapper that will replace the label visually.
-            // The original label is kept inside the wrapper (hidden, zero-size) so that
-            // UIChatMessage's blur/expiry tween still has a valid layout target.
             var wrapper = new VisualElement { name = "ponce_emoji_wrapper" };
             wrapper.style.flexDirection = FlexDirection.Row;
             wrapper.style.flexWrap = Wrap.Wrap;
             wrapper.style.alignItems = Align.Center;
             wrapper.style.flexGrow = 1;
             wrapper.style.flexShrink = 1;
-
-            // Blank and shrink the original label so it takes no space but stays reachable for tweens.
-            label.text = string.Empty;
-            label.style.position = Position.Absolute;
-            label.style.width = 0;
-            label.style.height = 0;
-            label.style.minWidth = 0;
-            label.style.minHeight = 0;
-            label.style.overflow = Overflow.Hidden;
 
             // Build interleaved Label + Image children from the parsed segments.
             int cursor = 0;
@@ -131,13 +125,7 @@ namespace PoncePuck.LocalMute
             if (cursor < sourceText.Length)
                 wrapper.Add(MakeSegmentLabel(label, sourceText.Substring(cursor)));
 
-            // Add the original (now hidden) label as the last child so the tween target stays valid.
-            label.RemoveFromHierarchy();
-            wrapper.Add(label);
-
-            // Insert wrapper exactly where the label was.
-            row.Insert(labelIdx, wrapper);
-
+            label.Add(wrapper);
             return true;
         }
 

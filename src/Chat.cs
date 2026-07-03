@@ -207,6 +207,21 @@ private void TrySendChat(string text)
             }
         }
 
+        // Reflection Invoke does not fill in C# default arguments, so the args array length
+        // must equal the method's parameter count. b1117 changed UIChat.StartInput(bool) to
+        // StartInput(bool isTeamChat, string openCharacter) - a 1-element array now throws
+        // TargetParameterCountException. Size the array from the live signature so both the
+        // old (1-param) and new (2-param) builds work.
+        private static void InvokeStartInput(Type uiType, object ui)
+        {
+            var mi = uiType.GetMethod("StartInput", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (mi == null) return;
+            int n = mi.GetParameters().Length;
+            object[] args = n >= 2 ? new object[] { false, null } : (n == 1 ? new object[] { false } : new object[0]);
+            try { mi.Invoke(ui, args); }
+            catch (Exception e) { Debug.LogWarning("[PPKB] StartInput invoke failed: " + e.Message); }
+        }
+
         private bool TryNS7Prefill(object ui, string text)
         {
             try
@@ -214,7 +229,7 @@ private void TrySendChat(string text)
                 // B310 flow: ensure chat input is visible/active before writing text.
                 var tUi = ui.GetType();
                 tUi.GetMethod("Show", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, null);
-                tUi.GetMethod("StartInput", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, new object[] { false });
+                InvokeStartInput(tUi, ui);
                 tUi.GetMethod("ShowTextField", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, null);
                 tUi.GetMethod("Focus", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, null);
 
@@ -374,7 +389,7 @@ private void TrySendChat(string text)
             {
                 var chatType = ui.GetType();
                 chatType.GetMethod("Show", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, null);
-                chatType.GetMethod("StartInput", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, new object[] { false });
+                InvokeStartInput(chatType, ui);
                 chatType.GetMethod("ShowTextField", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, null);
 
                 var openMethods = chatType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
