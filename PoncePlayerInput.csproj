@@ -63,20 +63,4 @@
     <PingSoundFiles Include="$(OutputPath)PingSounds\*.ogg" />
   </ItemGroup>
 
-  <!-- Mirror the build into the PonceModpack bundle (one workshop item that
-       ships every client-side mod; see PonceModpack/README.md in the
-       poncepuckmods repo). -->
-  <Target Name="CopyToModpack" AfterTargets="Build">
-    <PropertyGroup>
-      <ModpackModulesDir>C:\Users\Amiki\OneDrive\Desktop\Desk\Development\poncepuckmods\PonceClientHelper\dist\modules</ModpackModulesDir>
-    </PropertyGroup>
-    <ItemGroup>
-      <ModpackPingSounds Include="$(MSBuildProjectDirectory)\PingSounds\*.mp3" />
-      <ModpackPingSounds Include="$(MSBuildProjectDirectory)\PingSounds\*.wav" />
-      <ModpackPingSounds Include="$(MSBuildProjectDirectory)\PingSounds\*.ogg" />
-    </ItemGroup>
-    <MakeDir Directories="$(ModpackModulesDir)\PingSounds" />
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModpackModulesDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="@(ModpackPingSounds)" DestinationFolder="$(ModpackModulesDir)\PingSounds" SkipUnchangedFiles="true" Condition="'@(ModpackPingSounds)' != ''" />
-  </Target>
 </Project>
