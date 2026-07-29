@@ -70,9 +70,14 @@ namespace PoncePuck.Keybinds
             
             try
             {
-                // Hook position/role change events (EventManager is static in B310)
-                EventManager.AddEventListener("Event_OnPlayerRoleChanged", new Action<Dictionary<string, object>>(OnPlayerRoleChanged));
-                EventManager.AddEventListener("Event_OnPlayerPositionChanged", new Action<Dictionary<string, object>>(OnPlayerPositionChanged));
+                // The event is "Event_OnRoleChanged" - NOT "Event_OnPlayerRoleChanged", and there is
+                // no "Event_OnPlayerPositionChanged" at all. Those two names were carried over from
+                // an older build and do not exist in b1117 (verified against the string table in
+                // libs/Puck.dll). AddEventListener happily registers an unknown name, so this hook
+                // reported success and then never fired once - which is why per-position FOV /
+                // sensitivity / minimap overrides silently stopped being applied.
+                EventManager.AddEventListener("Event_OnRoleChanged", new Action<Dictionary<string, object>>(OnPlayerRoleChanged));
+                EventManager.AddEventListener("Event_OnPlayerStateChanged", new Action<Dictionary<string, object>>(OnPlayerPositionChanged));
                 _eventHooked = true;
                 Debug.Log("[PPKB] Hooked position change events");
             }
@@ -104,6 +109,13 @@ namespace PoncePuck.Keybinds
             catch (Exception ex) { DebugLog($"[PPKB] OnPlayerPositionChanged error: {ex.Message}"); }
         }
         
+        // NOTE: do NOT add a periodic GetCurrentPosition() poll here as a "safety net" for the
+        // events. It was tried and it thrashes: GetCurrentPosition returns HockeyPosition.None both
+        // when the player genuinely has no position AND when its throttled player scan transiently
+        // finds nothing, so polling it turns every scan miss into a fake position change. The result
+        // is a ~1Hz Center -> None -> Center loop that restores base settings and re-applies the
+        // override forever. Position changes are event-driven on purpose.
+
         private void UnhookPositionChangeEvents()
         {
             if (!_eventHooked) return;

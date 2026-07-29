@@ -196,9 +196,6 @@ namespace PoncePuck.Keybinds
                 _cmd.ParsePositionSettings();
                 Debug.Log($"[PPKB] Loaded {_cmd.positionSettings.Count} position settings from {_cmd.positionSettingsRaw?.Count ?? 0} raw entries");
 
-                // Parse trusted server mods (per-server "MODS REQUIRED" popup suppression)
-                _cmd.ParseTrustedServerMods();
-
                 // Migrate old position settings file if it exists
                 if (File.Exists(OldPositionSettingsPath))
                 {
@@ -233,9 +230,6 @@ namespace PoncePuck.Keybinds
                 // Serialize position settings to raw strings for JSON
                 _cmd.SerializePositionSettings();
 
-                // Serialize trusted server mod fingerprints (popup suppression)
-                _cmd.SerializeTrustedServerMods();
-                
                 // Debug: log position settings before save
                 Debug.Log($"[PPKB] Saving {_cmd.positionSettings.Count} position settings as {_cmd.positionSettingsRaw.Count} raw strings");
                 foreach (var raw in _cmd.positionSettingsRaw)

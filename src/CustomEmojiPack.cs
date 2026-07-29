@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
@@ -30,6 +31,11 @@ namespace PoncePuck.LocalMute
         private static readonly List<KeyValuePair<string, CustomEmojiAsset>> _primaryTokens = new List<KeyValuePair<string, CustomEmojiAsset>>();
         private static readonly Regex TokenRegex = new Regex(@":[a-zA-Z0-9_\-]+:", RegexOptions.Compiled);
         private static bool _loaded;
+
+        // Sibling element that hosts a row's rendered emoji content, and the USS class UIChatMessage
+        // toggles on the row's Label when a message expires (mirrored onto the wrapper - see SyncBlurState).
+        internal const string WrapperName = "ponce_emoji_wrapper";
+        private const string BlurredClass = "blurred";
 
         // URL emojis from links.txt waiting to be downloaded (SprayMod-style "Name = url" lines).
         // Drained by PumpPendingDownloads from LocalMuteRunner.Update once a coroutine host exists.
@@ -67,7 +73,7 @@ namespace PoncePuck.LocalMute
             return result;
         }
 
-        public static bool TryApplyInlineEmojis(Label label, string sourceText)
+        public static bool TryApplyInlineEmojis(Label label, string sourceText, object uiChat = null)
         {
             if (label == null || string.IsNullOrEmpty(sourceText))
                 return false;
@@ -83,57 +89,195 @@ namespace PoncePuck.LocalMute
             if (orderedMatches.Count == 0)
                 return false;
 
-            // Remove any previous inline wrapper we built for this label (defensive; a row is
+            // Remove any previous inline wrapper we built for this row (defensive; a row is
             // normally processed once).
-            for (int i = label.childCount - 1; i >= 0; i--)
+            for (int i = row.childCount - 1; i >= 0; i--)
             {
-                if (label[i] is VisualElement prev && prev.name == "ponce_emoji_wrapper")
-                    prev.RemoveFromHierarchy();
+                if (row[i] is VisualElement prevWrapper && prevWrapper.name == WrapperName)
+                    prevWrapper.RemoveFromHierarchy();
             }
 
-            // b1117 rework: UIChat.AddChatMessage registers a GeometryChangedEvent ON THIS LABEL
-            // (OnRowGeometryChanged -> PinLabelHeight + RefreshContentAndScroll) to size the row
-            // and autoscroll, and UIChatMessage's expiry blur toggles the ".blurred" USS class on
-            // THIS LABEL. The old approach (detach the label into a sibling wrapper) broke both:
-            // the row never re-measured/scrolled and emoji messages never faded.
-            // Fix: keep the label in place, clear its text, and host the emoji content as the
-            // label's own children. The game's geometry callback then re-fires (empty text makes
-            // PinLabelHeight a no-op, RefreshContentAndScroll runs) and ".blurred" fades our content.
-            label.text = string.Empty;
-            label.style.flexDirection = FlexDirection.Row;
-            label.style.flexWrap = Wrap.Wrap;
-            label.style.alignItems = Align.Center;
-            label.style.height = StyleKeyword.Auto;   // let the row grow to the emoji content
+            int labelIdx = row.IndexOf(label);
+            if (labelIdx < 0)
+                return false;
 
-            var wrapper = new VisualElement { name = "ponce_emoji_wrapper" };
+            // The emoji content MUST live in a plain VisualElement, NOT inside the Label: Yoga drops
+            // a node's text-measure function once it has children, so a Label hosting elements
+            // collapses the row and messages overlap. Build a wrapper that content-sizes correctly.
+            var wrapper = new VisualElement { name = WrapperName };
+            wrapper.userData = label;                    // blur target - see SyncBlurState
             wrapper.style.flexDirection = FlexDirection.Row;
             wrapper.style.flexWrap = Wrap.Wrap;
             wrapper.style.alignItems = Align.Center;
             wrapper.style.flexGrow = 1;
             wrapper.style.flexShrink = 1;
 
-            // Build interleaved Label + Image children from the parsed segments.
+            // Plan the row as plain data first. Nothing is detached until the plan is complete, so a
+            // failure while decoding an emoji can't strand the row's label and blank the message.
+            // Each text segment is re-balanced so a rich-text span that straddles an emoji token
+            // ("<b>hi :catjam: bye</b>", or an @mention wrapping the line in <mark>) keeps its
+            // formatting instead of orphaning the open/close tag on different segments.
+            var parts = new List<(string text, CustomEmojiAsset asset)>();
             int cursor = 0;
             foreach (var (start, end, asset) in orderedMatches)
             {
                 if (start > cursor)
-                    wrapper.Add(MakeSegmentLabel(label, sourceText.Substring(cursor, start - cursor)));
-
-                wrapper.Add(MakeEmojiImage(asset));
+                    parts.Add((BalanceRichTextSegment(sourceText, cursor, start), null));
+                parts.Add((null, asset));
                 cursor = end;
             }
             if (cursor < sourceText.Length)
-                wrapper.Add(MakeSegmentLabel(label, sourceText.Substring(cursor)));
+                parts.Add((BalanceRichTextSegment(sourceText, cursor, sourceText.Length), null));
 
-            label.Add(wrapper);
+            // Commit. The game's own Label is re-homed as the wrapper's FIRST text run rather than
+            // hidden: it stays a leaf, so it keeps its text measure and sizes normally, and it stays
+            // real and visible - which matters because other mods reach into the row for it.
+            // UnifiedTagMod pulls its [[G|..]] / [[N|..]] markers out of this label's text and then
+            // re-renders that text every frame to animate the tag. Emptying the label (the previous
+            // approach) left it nothing to find, so tags showed as raw markup on any message that
+            // also carried an emoji. The marker lives in the message prefix, so it always lands in
+            // this first segment - CollectOrderedMatches refuses to split a marker.
+            try
+            {
+                label.RemoveFromHierarchy();
+                bool labelPlaced = false;
+                foreach (var (text, asset) in parts)
+                {
+                    if (asset != null)
+                    {
+                        wrapper.Add(MakeEmojiImage(asset));
+                    }
+                    else if (!labelPlaced)
+                    {
+                        labelPlaced = true;
+                        label.text = text;
+                        wrapper.Add(label);
+                    }
+                    else
+                    {
+                        wrapper.Add(MakeSegmentLabel(label, text));
+                    }
+                }
+
+                // Emoji-only message: no text segment claimed the label, but it still has to be in
+                // the tree (and be the row's first Label) for UIChatMessage and the tag lookup.
+                if (!labelPlaced)
+                {
+                    label.text = string.Empty;
+                    wrapper.Insert(0, label);
+                }
+
+                row.Insert(labelIdx, wrapper);
+            }
+            catch (Exception ex)
+            {
+                // Put the row back the way we found it rather than leaving an empty message.
+                Debug.LogWarning($"[CustomEmoji] Inline render failed, restoring plain row: {ex.Message}");
+                wrapper.RemoveFromHierarchy();
+                label.RemoveFromHierarchy();
+                label.text = sourceText;
+                row.Insert(Mathf.Clamp(labelIdx, 0, row.childCount), label);
+                return false;
+            }
+
+            // b1117+ drives row/container height + autoscroll from the label's GeometryChangedEvent
+            // (UIChat.RefreshContentAndScroll). Nudge it once more after the wrapper settles, since
+            // the images can resolve their size a pass later. No-op if no UIChat instance was passed.
+            HookContentRefresh(wrapper, uiChat);
             return true;
         }
+
+        /// <summary>
+        /// UIChatMessage.Focus/Blur toggle the ".blurred" USS class on the row's own Label to fade
+        /// expired messages. Our emoji content lives in a sibling wrapper (a Label can't host child
+        /// elements - Yoga drops the text measure once a node has children, which collapses the row),
+        /// so the class never reaches it and emoji messages would stay fully opaque forever. Mirror
+        /// the label's current state onto the wrapper; called from the UIChatMessage patches.
+        /// </summary>
+        internal static void SyncBlurState(VisualElement row)
+        {
+            var wrapper = row?.Q<VisualElement>(WrapperName);
+            if (!(wrapper?.userData is Label label)) return;
+
+            bool blurred = label.ClassListContains(BlurredClass);
+            // Mirror onto the siblings we created, NOT onto the wrapper: UIChatMessage already
+            // blurs the re-homed label itself, so blurring their shared parent would fade that one
+            // twice (wrapper opacity * label opacity) and leave the text darker than the images.
+            foreach (var child in wrapper.Children())
+            {
+                if (child != label)
+                    child.EnableInClassList(BlurredClass, blurred);
+            }
+        }
+
+        private static MethodInfo _refreshContentAndScroll;
+        private static bool _refreshResolved;
+
+        // Re-invoke UIChat's private RefreshContentAndScroll so the message container re-measures
+        // and autoscrolls after we swap in the emoji wrapper.
+        private static void HookContentRefresh(VisualElement anchor, object uiChat)
+        {
+            if (uiChat == null) return;
+            if (!_refreshResolved)
+            {
+                _refreshResolved = true;
+                // Match the no-arg overload explicitly: a future build that adds a parameter would
+                // otherwise resolve here and then throw TargetParameterCountException on every row.
+                _refreshContentAndScroll = uiChat.GetType().GetMethod(
+                    "RefreshContentAndScroll",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
+                    null, Type.EmptyTypes, null);
+                if (_refreshContentAndScroll == null)
+                    Debug.LogWarning("[CustomEmoji] UIChat.RefreshContentAndScroll(): not found - " +
+                                     "emoji rows won't resize the chat container on this build.");
+            }
+            var mi = _refreshContentAndScroll;
+            if (mi == null) return;
+
+            void Refresh()
+            {
+                try { mi.Invoke(uiChat, null); }
+                catch (Exception ex) { Debug.LogWarning($"[CustomEmoji] RefreshContentAndScroll failed: {ex.Message}"); }
+            }
+
+            // Refresh once, as soon as the wrapper has a real height, then never again: the refresh
+            // re-measures every row and restarts a scroll tween, so leaving this live would re-run
+            // the whole thing on every later layout pass of every emoji row still in chat.
+            bool refreshed = false;
+            anchor.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                if (refreshed || anchor.contentRect.height <= 0f) return;
+                refreshed = true;
+                Refresh();
+            });
+            // And once on the next layout pass in case geometry never changes again.
+            anchor.schedule.Execute(() => { if (!refreshed) { refreshed = true; Refresh(); } });
+        }
+
+        // Spans owned by UnifiedTagMod's animated tags. A :shortcode: inside one would split the
+        // marker across two segment labels, and TagMod parses a marker out of a single label's text
+        // - so the tag would silently stop rendering. Leave anything inside these alone.
+        private static readonly Regex TagMarkerRegex = new Regex(@"\[\[[A-Za-z]\|.*?\]\]", RegexOptions.Compiled);
 
         private static List<(int start, int end, CustomEmojiAsset asset)> CollectOrderedMatches(string text)
         {
             var result = new List<(int, int, CustomEmojiAsset)>();
+            var markers = TagMarkerRegex.Matches(text);
+
             foreach (Match m in TokenRegex.Matches(text))
             {
+                bool insideMarker = false;
+                foreach (Match marker in markers)
+                {
+                    if (m.Index >= marker.Index && m.Index < marker.Index + marker.Length)
+                    {
+                        insideMarker = true;
+                        break;
+                    }
+                }
+                if (insideMarker)
+                    continue;
+
                 if (_emojiByToken.TryGetValue(m.Value, out var asset))
                     result.Add((m.Index, m.Index + m.Length, asset));
                 else if (TryGetKaomojiAsset(m.Value, out var kaomoji))
@@ -158,6 +302,51 @@ namespace PoncePuck.LocalMute
 
             _kaomojiByToken[token] = asset; // cache misses too, so we don't recompute every message
             return asset != null;
+        }
+
+        // Matches the rich-text tags the mod emits: <b> <i> <u> <s> <mark=..> <color=..> and closes.
+        private static readonly Regex RichTagRegex = new Regex(@"<(/?)([a-zA-Z]+)(=[^>]*)?>", RegexOptions.Compiled);
+
+        // Re-open the rich-text spans that were open at position 'a' and close the spans still open
+        // at position 'b', so a segment cut out of the middle of the message is self-balanced.
+        private static string BalanceRichTextSegment(string full, int a, int b)
+        {
+            if (a < 0 || b > full.Length || a >= b)
+                return string.Empty;
+
+            var openAtA = ScanOpenTags(full, a);
+            var openAtB = ScanOpenTags(full, b);
+            string body = full.Substring(a, b - a);
+            if (openAtA.Count == 0 && openAtB.Count == 0)
+                return body;
+
+            var sb = new StringBuilder();
+            foreach (var t in openAtA) sb.Append(t.open);
+            sb.Append(body);
+            for (int i = openAtB.Count - 1; i >= 0; i--)
+                sb.Append("</").Append(openAtB[i].name).Append('>');
+            return sb.ToString();
+        }
+
+        // The tags left open (unclosed) just before position 'pos', in open order.
+        private static List<(string name, string open)> ScanOpenTags(string full, int pos)
+        {
+            var stack = new List<(string name, string open)>();
+            foreach (Match m in RichTagRegex.Matches(full))
+            {
+                if (m.Index >= pos) break;
+                string name = m.Groups[2].Value.ToLowerInvariant();
+                if (m.Groups[1].Value == "/")
+                {
+                    for (int i = stack.Count - 1; i >= 0; i--)
+                        if (stack[i].name == name) { stack.RemoveAt(i); break; }
+                }
+                else
+                {
+                    stack.Add((name, m.Value));
+                }
+            }
+            return stack;
         }
 
         private static Label MakeSegmentLabel(Label template, string text)

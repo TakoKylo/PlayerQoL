@@ -576,42 +576,70 @@ namespace PoncePuck.LocalMute
         {
             try
             {
-                // FIRST: Try to get server name from scoreboard (most reliable, shows custom server names)
+                // BEST: the server's own advertised name. ServerManager holds it in a
+                // NetworkVariable<Server>, so it's synced to every client and is available even
+                // before the scoreboard has been opened and styled.
+                try
+                {
+                    var sm = NetworkBehaviourSingleton<ServerManager>.Instance;
+                    if (sm != null && sm.Server != null)
+                    {
+                        string advertised = sm.Server.Value.Name.ToString();
+                        if (!string.IsNullOrWhiteSpace(advertised))
+                            return advertised.Trim();
+                    }
+                }
+                catch { }
+
+                // NEXT: the scoreboard header, which UIScoreboard.StyleServer fills from that same value.
                 string scoreboardName = ScoreboardUtil.GetServerNameFromScoreboard();
                 if (!string.IsNullOrEmpty(scoreboardName))
                 {
                     return scoreboardName;
                 }
 
-                // FALLBACK: Try to get server address from Unity Transport
+                // FALLBACK: the endpoint we're actually connected to. UnityTransport exposes this
+                // as a public ConnectionData struct field with Address/Port - there is no
+                // "ConnectionAddress" member, so the old lookup here never matched and every
+                // player ended up with the next fallback's value instead.
                 var nm = Unity.Netcode.NetworkManager.Singleton;
                 if (nm != null && nm.IsClient)
                 {
-                    var transport = nm.NetworkConfig.NetworkTransport;
-                    var transportType = transport?.GetType();
-                    if (transportType != null)
+                    var transport = nm.NetworkConfig?.NetworkTransport;
+                    if (transport != null)
                     {
-                        var addressProp = transportType.GetProperty("ConnectionAddress", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                        if (addressProp != null)
+                        var cd = transport.GetType()
+                            .GetField("ConnectionData", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                            ?.GetValue(transport);
+                        if (cd != null)
                         {
-                            var addr = addressProp.GetValue(transport) as string;
+                            var cdType = cd.GetType();
+                            string addr = cdType.GetField("Address")?.GetValue(cd) as string;
+                            object port = cdType.GetField("Port")?.GetValue(cd);
                             if (!string.IsNullOrEmpty(addr))
-                                return addr;
-                        }
-                        var addressField = transportType.GetField("ConnectionAddress", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                        if (addressField != null)
-                        {
-                            var addr = addressField.GetValue(transport) as string;
-                            if (!string.IsNullOrEmpty(addr))
-                                return addr;
+                                return port != null ? $"{addr}:{port}" : addr;
                         }
                     }
-                    // Last fallback: use NetworkManager name or status
-                    return nm.name ?? "UnknownServer";
                 }
             }
             catch { }
+            // Deliberately NO GameObject-name fallback. NetworkManager's GameObject is called
+            // "Network Manager", so returning nm.name stored that literal string as the last-seen
+            // server for every player. An empty string means "unknown", which the UI renders as a dash.
             return "";
+        }
+
+        // Values previously written by the nm.name fallback described above. They are meaningless
+        // as server names, so treat them as unknown instead of showing them to the user.
+        public static string CleanServerName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "";
+            string t = name.Trim();
+            if (t.Equals("Network Manager", StringComparison.OrdinalIgnoreCase) ||
+                t.Equals("NetworkManager", StringComparison.OrdinalIgnoreCase) ||
+                t.Equals("UnknownServer", StringComparison.OrdinalIgnoreCase))
+                return "";
+            return t;
         }
     }
 
@@ -743,9 +771,21 @@ namespace PoncePuck.LocalMute
                 // Prefix: last-line text-mute enforcement at the UI level (suppresses muted/blocked
                 // senders even when the ChatManager RPC-level prefix doesn't catch the message,
                 // e.g. server mods that relay chat without the sender's SteamID).
+                //
+                // Postfix priority MUST stay above Normal. UnifiedTagMod postfixes this same method
+                // to drive its animated [[G|..]] tags, and it does so by capturing the label's text
+                // once and then rewriting that label every frame from the captured prefix/suffix.
+                // If it captures BEFORE we've replaced the :shortcodes: with images, it restores the
+                // literal shortcode text next to our image forever after. Its own [HarmonyPriority(-1)]
+                // is read by Harmony as "unspecified" and normalised to Normal, so without this the
+                // running order comes down to mod load order and the bug appears for some users only.
+                var postfix = new HarmonyMethod(typeof(LocalMuteClientMod), nameof(Chat_AddMessage_Postfix))
+                {
+                    priority = Priority.First
+                };
                 h.Patch(m,
                     prefix: new HarmonyMethod(typeof(LocalMuteClientMod), nameof(Chat_AddMessage_Prefix)),
-                    postfix: new HarmonyMethod(typeof(LocalMuteClientMod), nameof(Chat_AddMessage_Postfix)));
+                    postfix: postfix);
                 Debug.Log("[LocalMute] Successfully patched UIChat.AddChatMessage (mute filter + @mention highlighting)");
             }
             catch (Exception e) { Debug.LogError("[LocalMute] Patch_Chat_AddMessage failed: " + e); }
@@ -875,11 +915,14 @@ namespace PoncePuck.LocalMute
                     ? originalText.Replace("<noparse>", "").Replace("</noparse>", "")
                     : originalText;
 
-                // Markdown only makes sense when rich text will render.
-                string processedText = richTextOn ? ProcessMarkdown(workingText) : workingText;
+                // Markdown only makes sense when rich text will render. Both passes skip over any
+                // [[..]] tag markers so another mod's markup reaches it intact.
+                string processedText = richTextOn
+                    ? ApplyOutsideTagMarkers(workingText, ProcessMarkdown)
+                    : workingText;
 
                 // Kaomoji/emoji shortcodes are plain-text replacements - always safe.
-                processedText = KaomojiSystem.ProcessKaomoji(processedText);
+                processedText = ApplyOutsideTagMarkers(processedText, KaomojiSystem.ProcessKaomoji);
                 
                 // Then process @mentions if the message contains @
                 bool wasMentioned = false;
@@ -961,10 +1004,12 @@ namespace PoncePuck.LocalMute
                         lastLabel.enableRichText = true;
                 }
 
-                // Apply external custom emojis (images/GIFs) after text processing.
-                // Shortcodes travel as ASCII, each client renders them as images locally.
-                if (richTextOn)
-                    CustomEmojiPack.TryApplyInlineEmojis(lastLabel, processedText);
+                // Apply external custom emojis (images/GIFs) after text processing. Image/child
+                // insertion doesn't depend on TMP rich text, so render them even when the chat
+                // rich-text toggle is OFF - otherwise :catjam:/:tableflip: show as raw text.
+                // Pass the UIChat instance so the wrapper swap can re-drive the row's
+                // height/scroll (b1117+ pins those off the now-hidden label's geometry).
+                CustomEmojiPack.TryApplyInlineEmojis(lastLabel, processedText, __instance);
             }
             catch (Exception e)
             {
@@ -1343,6 +1388,38 @@ namespace PoncePuck.LocalMute
         /// ||spoiler|| -> hidden text (opaque gray background)
         /// `code` -> monospace code
         /// </summary>
+        // UnifiedTagMod injects [[G|..]] / [[N|..]] markers into the chat prefix and then parses them
+        // back out of the row label's text to drive its animated tags. Anything we rewrite inside one
+        // of those markers breaks that parse - a '*', '`' or '||' in a tag name would be turned into
+        // rich-text tags, TagMod's colour/field parse would bail, and the player would just see the
+        // raw "[[G|...]]" markup. So run our text passes only on the spans BETWEEN markers.
+        private static readonly System.Text.RegularExpressions.Regex TagMarkerRegex =
+            new System.Text.RegularExpressions.Regex(@"\[\[[A-Za-z]\|.*?\]\]",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        internal static string ApplyOutsideTagMarkers(string text, Func<string, string> transform)
+        {
+            if (string.IsNullOrEmpty(text) || transform == null)
+                return text;
+
+            var markers = TagMarkerRegex.Matches(text);
+            if (markers.Count == 0)
+                return transform(text);
+
+            var sb = new System.Text.StringBuilder(text.Length + 32);
+            int cursor = 0;
+            foreach (System.Text.RegularExpressions.Match m in markers)
+            {
+                if (m.Index > cursor)
+                    sb.Append(transform(text.Substring(cursor, m.Index - cursor)));
+                sb.Append(m.Value);          // verbatim - this span belongs to TagMod
+                cursor = m.Index + m.Length;
+            }
+            if (cursor < text.Length)
+                sb.Append(transform(text.Substring(cursor)));
+            return sb.ToString();
+        }
+
         private static string ProcessMarkdown(string message)
         {
             if (string.IsNullOrEmpty(message))
@@ -2588,7 +2665,77 @@ internal static class ScoreboardUtil
         ve.style.color = Color.white;
         ve.style.unityFont = GetUIFont();
     }
+
+    // A TextField renders its text in an inner "unity-text-input" element that carries the theme's
+    // own colour and border, so styling the TextField itself leaves the value invisible against a
+    // dark row. Style the input element directly.
+    private static void StyleTextFieldInput(UnityEngine.UIElements.TextField field, Color bg,
+                                            TextAnchor align = TextAnchor.MiddleLeft)
+    {
+        if (field == null) return;
+        var input = field.Q("unity-text-input");
+        if (input == null) return;
+
+        input.style.backgroundColor = new UnityEngine.UIElements.StyleColor(bg);
+        input.style.color = Color.white;
+        input.style.unityFont = GetUIFont();
+        input.style.unityTextAlign = align;
+        input.style.borderLeftWidth = 0; input.style.borderRightWidth = 0;
+        input.style.borderTopWidth = 0; input.style.borderBottomWidth = 0;
+        input.style.paddingLeft = 4; input.style.paddingRight = 4;
+        input.style.borderTopLeftRadius = 4; input.style.borderTopRightRadius = 4;
+        input.style.borderBottomLeftRadius = 4; input.style.borderBottomRightRadius = 4;
+    }
     // (Reference: same approach as your Keybinds panel to normalize text & foreground UI.)  // :contentReference[oaicite:2]{index=2}
+
+    // ===== poncepuck.net profile links =====
+    private const string PonceProfileBaseUrl = "https://poncepuck.net/profile/";
+
+    /// <summary>True when a stored Steam ID is something we can actually build a profile link from.
+    /// Several call sites default a missing id to the literal string "0", which parses as a valid
+    /// ulong, so a plain TryParse is not enough of a guard on its own.</summary>
+    internal static bool HasUsableSteamId(string steamId)
+    {
+        return !string.IsNullOrWhiteSpace(steamId)
+            && ulong.TryParse(steamId.Trim(), out ulong id)
+            && id != 0UL;
+    }
+
+    /// <summary>Open a player's poncepuck.net profile. Prefers the in-game Steam overlay browser so
+    /// the player isn't alt-tabbed out mid-game, and falls back to the system browser otherwise.
+    /// The IsOverlayEnabled() probe is what makes that fallback reachable: with the overlay turned
+    /// off, ActivateGameOverlayToWebPage returns normally and simply does nothing, so there is no
+    /// exception or return value to detect the failure with.</summary>
+    internal static void OpenPonceProfile(string steamId)
+    {
+        if (!HasUsableSteamId(steamId))
+        {
+            Debug.LogWarning($"[LocalMute] Can't open Ponce profile - no usable Steam ID ('{steamId}')");
+            return;
+        }
+
+        string url = PonceProfileBaseUrl + steamId.Trim();
+        try
+        {
+            if (Steamworks.SteamUtils.IsOverlayEnabled())
+            {
+                Steamworks.SteamFriends.ActivateGameOverlayToWebPage(url);
+                LogHelper.Log($"[LocalMute] Opened Ponce profile in Steam overlay: {url}");
+                return;
+            }
+        }
+        catch { /* Steam API not initialised for this process - fall through to the browser */ }
+
+        try
+        {
+            Application.OpenURL(url);
+            LogHelper.Log($"[LocalMute] Opened Ponce profile in browser: {url}");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[LocalMute] Failed to open Ponce profile '{url}': {e.Message}");
+        }
+    }
 
     // ===== Strip [D] and [A] tags from player names for admin commands =====
     private static string StripAdminTags(string playerName)
@@ -2607,25 +2754,27 @@ internal static class ScoreboardUtil
     {
         try
         {
-            var scoreboard = UnityEngine.Object.FindFirstObjectByType<UIScoreboard>();
+            var scoreboard = UnityEngine.Object.FindFirstObjectByType<UIScoreboard>(UnityEngine.FindObjectsInactive.Include);
             if (scoreboard != null)
             {
-                var doc = scoreboard.GetComponent<UIDocument>();
-                if (doc != null && doc.rootVisualElement != null)
+                // UIScoreboard caches the label it fills from Server.Name in a private "nameLabel"
+                // field, so read that directly. The old code looked for a "ServerContainer" element,
+                // which does not exist anywhere in the scoreboard tree - the label actually lives at
+                // ScoreboardView > Scoreboard > Header > NameLabel. That query could never match, so
+                // this always returned empty and callers fell through to the raw IP address.
+                var cached = AccessTools.Field(typeof(UIScoreboard), "nameLabel")?.GetValue(scoreboard) as Label;
+                if (cached != null && !string.IsNullOrEmpty(cached.text))
+                    return StripRichTextTags(cached.text);
+
+                // GetComponentInParent, not GetComponent: the UIDocument sits above the view.
+                var doc = scoreboard.GetComponentInParent<UIDocument>();
+                var root = doc != null ? doc.rootVisualElement : null;
+                if (root != null)
                 {
-                    var root = doc.rootVisualElement;
-                    
-                    // Try the known ServerContainer/NameLabel structure
-                    var serverContainer = root.Q<VisualElement>("ServerContainer");
-                    if (serverContainer != null)
-                    {
-                        var nameLabel = serverContainer.Q<Label>("NameLabel");
-                        if (nameLabel != null && !string.IsNullOrEmpty(nameLabel.text))
-                        {
-                            // Strip rich text tags from server name
-                            return StripRichTextTags(nameLabel.text);
-                        }
-                    }
+                    var header = root.Q<VisualElement>("Header");
+                    var nameLabel = (header ?? root).Q<Label>("NameLabel");
+                    if (nameLabel != null && !string.IsNullOrEmpty(nameLabel.text))
+                        return StripRichTextTags(nameLabel.text);
                 }
             }
         }
@@ -3046,8 +3195,7 @@ internal static class ScoreboardUtil
         saveBtn.style.paddingBottom = 4; saveBtn.style.height = 40;
         saveBtn.style.backgroundColor = new UnityEngine.UIElements.StyleColor(isSaved ? 
             new Color(0.8f, 0.4f, 0f, 1f) : new Color(0f, 0.6f, 0f, 1f)); // Orange for remove, Green for add
-        AddButtonFlash(saveBtn);
-        AddTabHover(saveBtn, () => false);
+        AddButtonFlash(saveBtn); // white hover + click flash; preserves the green base
 
         // Only show save button if not blocked and not muted
         if (!isBlocked && !(tMuted && vMuted))
@@ -3077,7 +3225,7 @@ internal static class ScoreboardUtil
             CloseAllMenus(); 
         });
 
-        profileBtn.text = "VIEW PROFILE";
+        profileBtn.text = "STEAM PROFILE";
         MakeReadable(profileBtn);
         profileBtn.style.marginTop = 4; profileBtn.style.marginBottom = 4;
         profileBtn.style.marginLeft = 4; profileBtn.style.marginRight = 4;
@@ -3087,6 +3235,27 @@ internal static class ScoreboardUtil
         AddButtonFlash(profileBtn);
         AddTabHover(profileBtn, () => false);
         menu.Add(profileBtn);
+
+        // PONCE PROFILE - poncepuck.net. Only offered when we actually have the player's Steam ID;
+        // this menu defaults a missing one to "0", which would link to a nonexistent profile.
+        if (HasUsableSteamId(steamId))
+        {
+            var ponceBtn = new UnityEngine.UIElements.Button(() =>
+            {
+                OpenPonceProfile(steamId);
+                CloseAllMenus();
+            });
+            ponceBtn.text = "PONCE PROFILE";
+            MakeReadable(ponceBtn);
+            ponceBtn.style.marginTop = 4; ponceBtn.style.marginBottom = 4;
+            ponceBtn.style.marginLeft = 4; ponceBtn.style.marginRight = 4;
+            ponceBtn.style.paddingLeft = 6; ponceBtn.style.paddingTop = 6;
+            ponceBtn.style.paddingBottom = 4; ponceBtn.style.height = 40;
+            ponceBtn.style.backgroundColor = new UnityEngine.UIElements.StyleColor(BtnBrightGray);
+            AddButtonFlash(ponceBtn);
+            AddTabHover(ponceBtn, () => false);
+            menu.Add(ponceBtn);
+        }
 
         // INFO button - shows highlightable dialog with player info
         var infoBtn = new UnityEngine.UIElements.Button(() => { 
@@ -3182,8 +3351,7 @@ internal static class ScoreboardUtil
         mBtn.style.height = 40;
         mBtn.style.backgroundColor = new UnityEngine.UIElements.StyleColor((isFullyMuted || isBlocked) ? 
             new Color(0.8f, 0.4f, 0f, 1f) : new Color(0.8f, 0f, 0f, 1f)); // Orange for unblock, Red for block
-        AddButtonFlash(mBtn);
-        AddTabHover(mBtn, () => false);
+        AddButtonFlash(mBtn); // white hover + click flash; preserves the red base
 
         // Only show block button if not saved
         if (!isSaved)
@@ -3191,19 +3359,15 @@ internal static class ScoreboardUtil
             menu.Add(mBtn);
         }
 
-        // PLAYER VOLUME title (styled like a button space but just text on background)
-        var volTitle = new VisualElement();
-        volTitle.style.marginTop = 4; 
-        volTitle.style.marginBottom = 4;
-        volTitle.style.marginLeft = 4; 
-        volTitle.style.marginRight = 4;
-        volTitle.style.paddingLeft = 6; 
-        volTitle.style.paddingTop = 6;
-        volTitle.style.paddingBottom = 10;
-        volTitle.style.height = 40;
-        
+        // PLAYER VOLUME caption - a section label above the slider row, not a card row of its own
+        // (PolishMenuCard skips the row treatment for children with this name).
+        var volTitle = new VisualElement { name = MenuCaptionName };
+        volTitle.style.paddingLeft = 4;
+
         var volLabel = new Label("PLAYER VOLUME");
         MakeReadable(volLabel);
+        volLabel.style.fontSize = 11;
+        volLabel.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.68f, 0.68f, 0.68f));
         volLabel.style.unityTextAlign = TextAnchor.MiddleLeft;
         volTitle.Add(volLabel);
         menu.Add(volTitle);
@@ -3234,22 +3398,30 @@ internal static class ScoreboardUtil
             volumeValueField.value = $"{volume}";
             MakeReadable(volumeValueField);
             volumeValueField.style.backgroundColor = new UnityEngine.UIElements.StyleColor(TextFieldBg);
-            volumeValueField.style.minWidth = 60;
-            volumeValueField.style.maxWidth = 60;
-            volumeValueField.style.maxHeight = 30;
-            volumeValueField.style.unityTextAlign = TextAnchor.MiddleRight;
-            volumeValueField.style.marginLeft = 8;
+            volumeValueField.style.minWidth = 48;
+            volumeValueField.style.maxWidth = 48;
+            volumeValueField.style.height = 24;
+            volumeValueField.style.marginLeft = 0;
             volumeValueField.style.marginRight = 8;
+            volumeValueField.style.marginTop = 0;
+            volumeValueField.style.marginBottom = 0;
+            // MakeReadable only colours the field itself; the text lives in an inner element with
+            // its own USS colour, which is why the value rendered as an invisible box.
+            StyleTextFieldInput(volumeValueField, ButtonBg, TextAnchor.MiddleCenter);
 
             // Volume slider (middle, grows to fill)
             var volumeSlider = new UnityEngine.UIElements.Slider(0f, 200f) { value = volume };
             volumeSlider.style.backgroundColor = new UnityEngine.UIElements.StyleColor(TextFieldBg);
-            volumeSlider.style.flexGrow = 1; 
-            volumeSlider.style.flexBasis = 0;  
-            volumeSlider.style.marginRight = 8;
-            
+            volumeSlider.style.flexGrow = 1;
+            volumeSlider.style.flexBasis = 0;
+            volumeSlider.style.marginRight = 0;
+
             // Apply settings slider styling
             StyleSliderLikeBase(volumeSlider);
+            // ...then fit it to the row: StyleSliderLikeBase pins 30px, which overflows the 24px
+            // of content the 36px row leaves once its padding is taken off.
+            volumeSlider.style.height = 24;
+            volumeSlider.style.marginTop = 0; volumeSlider.style.marginBottom = 0;
 
             // Two-way binding: slider updates field, field updates slider
             volumeSlider.RegisterValueChangedCallback(evt =>
@@ -3309,6 +3481,14 @@ internal static class ScoreboardUtil
         AddButtonFlash(cBtn);
         AddTabHover(cBtn, () => false);
         menu.Add(cBtn);
+
+        // Visual polish: rounded card, player header, uniform rounded rows, fade-in.
+        string menuDisplayName = StripAdminTags(player.Username?.Value.ToString() ?? "Player");
+        string menuNumber = "";
+        try { if (player.Number != null) { int n = player.Number.Value; if (n > 0 && n < 100) menuNumber = n.ToString(); } } catch { }
+        PolishMenuCard(menu,
+            string.IsNullOrEmpty(menuNumber) ? menuDisplayName : $"#{menuNumber}  {menuDisplayName}",
+            "", MenuAccentPlayer);
 
         _attachRoot.Add(menu);
         ChatWhisperUtil.InstallTabSwallow(_clickCatcher);
@@ -3433,106 +3613,70 @@ internal static class ScoreboardUtil
         }
         catch { }
         
-        var infoPanel = new VisualElement();
-        infoPanel.style.width = 1000;
-        infoPanel.style.height = 605;
-        infoPanel.style.backgroundColor = panelBg;
-        infoPanel.style.paddingLeft = 8;
-        infoPanel.style.paddingRight = 8;
-        infoPanel.style.paddingTop = 8;
-        infoPanel.style.paddingBottom = 8;
-        
-        // Title
-        var titleLabel = new Label("PLAYER INFORMATION");
-        MakeReadableLabel(titleLabel);
-        titleLabel.style.fontSize = 24;
-        titleLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-        titleLabel.style.marginBottom = 8;
-        titleLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
-        infoPanel.Add(titleLabel);
-        
-        // Info section
-        var infoSection = new VisualElement();
-        infoSection.style.backgroundColor = new StyleColor(new Color32(61, 61, 61, 255));
-        infoSection.style.paddingLeft = 8;
-        infoSection.style.paddingRight = 8;
-        infoSection.style.paddingTop = 8;
-        infoSection.style.paddingBottom = 8;
-        infoSection.style.marginBottom = 8;
-        infoSection.style.marginLeft = 8;
-        infoSection.style.marginRight = 8;
-        infoSection.style.marginTop = 8;
-        
-        // Row 1: Player name/number on left, Date on right
         string displayNumber = string.IsNullOrEmpty(player.playerNumber) ? "?" : player.playerNumber;
-        
-        var row1 = new VisualElement();
-        row1.style.flexDirection = FlexDirection.Row;
-        row1.style.justifyContent = Justify.SpaceBetween;
-        row1.style.marginBottom = 8;
-        
-        var nameLabel = new Label($"#{displayNumber} {player.playerName.ToUpper()}");
-        MakeReadableLabel(nameLabel);
-        nameLabel.style.fontSize = 18;
-        nameLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-        row1.Add(nameLabel);
-        
-        var dateLabel = new Label($"Added: {player.dateAdded:MM/dd/yy HH:mm:ss} | Last Seen: {player.lastSeen:MM/dd/yy HH:mm:ss}");
-        MakeReadableLabel(dateLabel);
-        dateLabel.style.fontSize = 18;
-        dateLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-        row1.Add(dateLabel);
-        
-        infoSection.Add(row1);
-        
-        // Row 2: Last server on left, Steam ID on right
-        var row2 = new VisualElement();
-        row2.style.flexDirection = FlexDirection.Row;
-        row2.style.justifyContent = Justify.SpaceBetween;
-        
-        if (!string.IsNullOrEmpty(player.lastServerSeen))
-        {
-            var serverLabel = new Label($"LAST SERVER: {player.lastServerSeen}");
-            MakeReadableLabel(serverLabel);
-            serverLabel.style.fontSize = 18;
-            serverLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-            row2.Add(serverLabel);
-        }
-        else
-        {
-            row2.Add(new VisualElement()); // Spacer
-        }
-        
-        var steamIdLabel = new Label($"STEAM ID: {player.steamId}");
-        MakeReadableLabel(steamIdLabel);
-        steamIdLabel.style.fontSize = 18;
-        steamIdLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-        row2.Add(steamIdLabel);
-        
-        infoSection.Add(row2);
-        infoPanel.Add(infoSection);
-        
+
+        var infoPanel = new VisualElement();
+        // Sized relative to the screen instead of a fixed 1000x605, which overflowed at lower
+        // resolutions and left a lot of empty card at higher ones.
+        infoPanel.style.width = new StyleLength(new Length(88, LengthUnit.Percent));
+        infoPanel.style.maxWidth = 900;
+        infoPanel.style.minWidth = 420;
+        infoPanel.style.maxHeight = new StyleLength(new Length(86, LengthUnit.Percent));
+        infoPanel.style.backgroundColor = panelBg;
+
+        var infoSection = MakeInfoSection();
+
+        // Key/value lines: every field used to be 18px bold, so nothing stood out and long values
+        // collided in the middle of a SpaceBetween row.
+        infoSection.Add(MakeInfoRow("ADDED", $"{player.dateAdded:MM/dd/yy HH:mm:ss}"));
+        infoSection.Add(MakeInfoRow("LAST SEEN", $"{player.lastSeen:MM/dd/yy HH:mm:ss}"));
+        infoSection.Add(MakeInfoRow("LAST SERVER", LocalMuteStore.CleanServerName(player.lastServerSeen)));
+        infoSection.Add(MakeInfoRow("STEAM ID", player.steamId));
+        AddPonceStatRows(infoSection, player.steamId);
+
+        // Two panes: a fixed-width left column carrying the name + every field, and NOTES taking
+        // all the remaining width. Notes is the part you actually read and type in, so it gets the
+        // majority of the card instead of a short strip under a full-width band of key/value rows.
+        var body = new VisualElement();
+        body.style.flexDirection = FlexDirection.Row;
+        body.style.flexGrow = 1; body.style.flexShrink = 1; body.style.minHeight = 0;
+
+        var leftCol = new VisualElement();
+        leftCol.style.flexDirection = FlexDirection.Column;
+        leftCol.style.width = 330; leftCol.style.flexShrink = 0;
+        leftCol.style.minHeight = 0; leftCol.style.overflow = Overflow.Hidden;
+        leftCol.Add(infoSection);           // the header is inserted above it by PolishDialogCard
+        body.Add(leftCol);
+
+        var notesPane = new VisualElement();
+        notesPane.style.flexDirection = FlexDirection.Column;
+        notesPane.style.flexGrow = 1; notesPane.style.flexShrink = 1;
+        notesPane.style.minWidth = 0; notesPane.style.marginLeft = 20;
+        body.Add(notesPane);
+
         // Notes header
-        var notesHeader = new Label("NOTES:");
+        var notesHeader = new Label("NOTES");
         MakeReadableLabel(notesHeader);
-        notesHeader.style.fontSize = 18;
-        notesHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
-        notesHeader.style.marginBottom = 8;
-        notesHeader.style.marginLeft = 8;
-        notesHeader.style.marginRight = 8;
-        infoPanel.Add(notesHeader);
-        
+        notesHeader.style.fontSize = 11;
+        notesHeader.style.color = new StyleColor(new Color(0.62f, 0.62f, 0.62f));
+        notesHeader.style.marginBottom = 4;
+        notesHeader.style.flexShrink = 0;
+        notesPane.Add(notesHeader);
+
         // Notes container
         var notesContainer = new VisualElement();
         notesContainer.style.flexGrow = 1;
-        notesContainer.style.marginBottom = 8;
-        notesContainer.style.marginLeft = 8;
-        notesContainer.style.marginRight = 8;
-        notesContainer.style.backgroundColor = new Color(0.1f, 0.1f, 0.1f, 0.8f);
-        notesContainer.style.paddingLeft = 8;
-        notesContainer.style.paddingRight = 8;
+        notesContainer.style.flexShrink = 1;
+        notesContainer.style.minHeight = 120;
+        notesContainer.style.marginBottom = 12;
+        notesContainer.style.minWidth = 0;
+        notesContainer.style.backgroundColor = new Color(0f, 0f, 0f, 0.35f);
+        notesContainer.style.paddingLeft = 10;
+        notesContainer.style.paddingRight = 10;
         notesContainer.style.paddingTop = 8;
         notesContainer.style.paddingBottom = 8;
+        notesContainer.style.borderTopLeftRadius = 8; notesContainer.style.borderTopRightRadius = 8;
+        notesContainer.style.borderBottomLeftRadius = 8; notesContainer.style.borderBottomRightRadius = 8;
         
                         // Create both TextField and Label (switch between them)
                 var notesField = new UnityEngine.UIElements.TextField();
@@ -3590,15 +3734,18 @@ internal static class ScoreboardUtil
                 // Start in view mode
                 notesLabel.text = player.notes ?? "";
                 notesContainer.Add(notesLabel);
-                infoPanel.Add(notesContainer);
+                notesPane.Add(notesContainer);
+                infoPanel.Add(body);
 
-        // Button row
+        // Button row. Wraps: with the Ponce button this row carries five entries, which overflows
+        // the card at its narrow end. marginTop keeps the body off the footer - without it the
+        // info card grows right up against the buttons.
         var buttonRow = new VisualElement();
         buttonRow.style.flexDirection = FlexDirection.Row;
-        buttonRow.style.justifyContent = Justify.Center;
-        buttonRow.style.marginBottom = 8;
-        buttonRow.style.marginLeft = 8;
-        buttonRow.style.marginRight = 8;
+        buttonRow.style.flexWrap = Wrap.Wrap;
+        buttonRow.style.justifyContent = Justify.FlexEnd;
+        buttonRow.style.flexShrink = 0;
+        buttonRow.style.marginTop = 14;
 
         // Profile button
         var profileBtn = new UnityEngine.UIElements.Button(() =>
@@ -3628,17 +3775,18 @@ internal static class ScoreboardUtil
                 Debug.LogError($"[LocalMute] Failed to open Steam profile overlay: {e.Message}");
             }
         });
-        profileBtn.text = "PROFILE";
-        MakeReadableLabel(profileBtn);
-        profileBtn.style.unityTextAlign = TextAnchor.MiddleCenter;
-        profileBtn.style.height = 50;
-        profileBtn.style.width = 150;
-        profileBtn.style.paddingLeft = 18;
-        profileBtn.style.paddingRight = 18;
-        profileBtn.style.marginRight = 8;
-        profileBtn.style.backgroundColor = new StyleColor(ButtonBg);
-        AddButtonFlash(profileBtn);
+        profileBtn.text = "STEAM PROFILE";
+        StyleDialogButton(profileBtn, ButtonBg);
         buttonRow.Add(profileBtn);
+
+        // PONCE PROFILE - poncepuck.net, shown only when the stored Steam ID is usable.
+        if (HasUsableSteamId(player.steamId))
+        {
+            var poncePvBtn = new UnityEngine.UIElements.Button(() => OpenPonceProfile(player.steamId))
+            { text = "PONCE PROFILE" };
+            StyleDialogButton(poncePvBtn, ButtonBg);
+            buttonRow.Add(poncePvBtn);
+        }
 
         // Copy Steam ID button
         var copySteamIdBtn = new UnityEngine.UIElements.Button(() =>
@@ -3654,16 +3802,7 @@ internal static class ScoreboardUtil
             }
         });
         copySteamIdBtn.text = "COPY ID";
-        MakeReadableLabel(copySteamIdBtn);
-        copySteamIdBtn.style.unityTextAlign = TextAnchor.MiddleCenter;
-        copySteamIdBtn.style.height = 50;
-        copySteamIdBtn.style.width = 150;
-        copySteamIdBtn.style.paddingLeft = 18;
-        copySteamIdBtn.style.paddingRight = 18;
-        copySteamIdBtn.style.marginRight = 8;
-        copySteamIdBtn.style.backgroundColor = new StyleColor(ButtonBg);
-        copySteamIdBtn.style.whiteSpace = WhiteSpace.NoWrap;
-        AddButtonFlash(copySteamIdBtn);
+        StyleDialogButton(copySteamIdBtn, ButtonBg);
         buttonRow.Add(copySteamIdBtn);
 
         // Save/Edit toggle button
@@ -3680,16 +3819,8 @@ internal static class ScoreboardUtil
         });
 
         saveEditBtn.text = "EDIT"; // Start with EDIT since we begin in view mode
-        saveEditBtn.style.unityTextAlign = TextAnchor.MiddleCenter;
-        saveEditBtn.style.height = 50;
-        saveEditBtn.style.width = 120;
-        saveEditBtn.style.paddingLeft = 18;
-        saveEditBtn.style.paddingRight = 18;
-        saveEditBtn.style.marginRight = 8;
-        saveEditBtn.style.backgroundColor = new StyleColor(ButtonBg);
-        MakeReadableLabel(saveEditBtn);
-                AddButtonFlash(saveEditBtn);
-                buttonRow.Add(saveEditBtn);
+        StyleDialogButton(saveEditBtn, ButtonBg);
+        buttonRow.Add(saveEditBtn);
 
         // Close button
         var closeBtn = new UnityEngine.UIElements.Button(() =>
@@ -3698,17 +3829,22 @@ internal static class ScoreboardUtil
             Debug.Log("[LocalMute] Closed standalone info dialog");
         });
         closeBtn.text = "CLOSE";
-        MakeReadableLabel(closeBtn);
-        closeBtn.style.unityTextAlign = TextAnchor.MiddleCenter;
-        closeBtn.style.height = 50;
-        closeBtn.style.width = 150;
-        closeBtn.style.paddingLeft = 18;
-        closeBtn.style.paddingRight = 18;
-        closeBtn.style.backgroundColor = new StyleColor(ButtonBg);
-        AddButtonFlash(closeBtn);
+        StyleDialogButton(closeBtn, BtnBrightGray);
         buttonRow.Add(closeBtn);
 
         infoPanel.Add(buttonRow);
+
+        // Header last, so it can sit above rows that already exist.
+        PolishDialogCard(infoPanel,
+            $"#{displayNumber}  {player.playerName}", "PLAYER INFORMATION", MenuAccentPlayer, leftCol);
+
+        // Click the dimmed backdrop to dismiss, matching the other dialog.
+        overlay.pickingMode = PickingMode.Position;
+        overlay.RegisterCallback<ClickEvent>(evt =>
+        {
+            if (evt.target == overlay) overlay.RemoveFromHierarchy();
+        });
+
         overlay.Add(infoPanel);
         root.Add(overlay);
 
@@ -3760,10 +3896,9 @@ internal static class ScoreboardUtil
 
         var panel = new VisualElement();
         panel.style.backgroundColor = new Color(0.15f, 0.15f, 0.15f, 1f);
-        panel.style.paddingLeft = 20; panel.style.paddingRight = 20;
-        panel.style.paddingTop = 20; panel.style.paddingBottom = 20;
-        panel.style.minWidth = 400;
-        panel.style.maxWidth = 600;
+        panel.style.minWidth = 420;
+        panel.style.maxWidth = 620;
+        panel.style.maxHeight = new StyleLength(new Length(86, LengthUnit.Percent));
 
         // Get player info from passed parameter or try to find it
         string playerName = "Unknown";
@@ -3850,41 +3985,39 @@ internal static class ScoreboardUtil
         // Only show number if it's valid (not null, not empty, not '?', and not whitespace)
         string trimmedNumber = playerNumber?.Trim();
         bool validNumber = !string.IsNullOrEmpty(trimmedNumber) && trimmedNumber != "?";
-        string titleText = validNumber ? $"PLAYER INFO - #{trimmedNumber} {playerName}" : $"PLAYER INFO - {playerName}";
+        string titleText = validNumber ? $"#{trimmedNumber}  {playerName}" : playerName;
 
-        var title = new Label(titleText);
-        MakeReadable(title);
-        title.style.fontSize = 20;
-        title.style.unityFontStyleAndWeight = FontStyle.Bold;
-        title.style.marginBottom = 15;
-        panel.Add(title);
-
-        // Show last seen server if available
-        
         // Steam ID (highlightable)
-        var steamIdField = new TextField("Steam ID") { value = steamId, isReadOnly = true };
-        MakeReadable(steamIdField);
-        steamIdField.style.marginBottom = 10;
+        var steamIdField = new TextField("STEAM ID") { value = steamId, isReadOnly = true };
+        StyleDialogField(steamIdField);
         panel.Add(steamIdField);
-        
+
         // Profile URL (highlightable)
-        var profileField = new TextField("Profile URL") { value = profileUrl, isReadOnly = true };
-        MakeReadable(profileField);
-        profileField.style.marginBottom = 10;
+        var profileField = new TextField("PROFILE URL") { value = profileUrl, isReadOnly = true };
+        StyleDialogField(profileField);
         panel.Add(profileField);
-        
+
+        var buttonRow = new VisualElement();
+        buttonRow.style.flexDirection = FlexDirection.Row;
+        buttonRow.style.justifyContent = Justify.FlexEnd;
+        buttonRow.style.marginTop = 14;
+        buttonRow.style.flexShrink = 0;
+
         // VIEW PROFILE button
-        var profileBtn = new UnityEngine.UIElements.Button(() => { 
+        var profileBtn = new UnityEngine.UIElements.Button(() => {
             OpenProfile(ui, player);
         }) { text = "OPEN STEAM PROFILE" };
-        MakeReadable(profileBtn);
-        profileBtn.style.marginTop = 10;
-        profileBtn.style.marginBottom = 10;
-        profileBtn.style.height = 40;
-        profileBtn.style.backgroundColor = new Color(0.2f, 0.4f, 0.6f, 1f);
-        AddButtonFlash(profileBtn);
-        panel.Add(profileBtn);
-        
+        StyleDialogButton(profileBtn, new Color(0.20f, 0.40f, 0.60f, 1f), 180f);
+        buttonRow.Add(profileBtn);
+
+        if (HasUsableSteamId(steamId))
+        {
+            var poncePvBtn = new UnityEngine.UIElements.Button(() => OpenPonceProfile(steamId))
+            { text = "PONCE PROFILE" };
+            StyleDialogButton(poncePvBtn, ButtonBg, 150f);
+            buttonRow.Add(poncePvBtn);
+        }
+
         // CLOSE button
         var closeBtn = new UnityEngine.UIElements.Button(() => {
             var root = GetScoreboardRoot(ui) ?? GetTopLevelRoot();
@@ -3893,13 +4026,13 @@ internal static class ScoreboardUtil
                 root.Remove(dialog);
             }
         }) { text = "CLOSE" };
-        MakeReadable(closeBtn);
-        closeBtn.style.marginTop = 10;
-        closeBtn.style.height = 40;
-        closeBtn.style.backgroundColor = new Color(0.5f, 0.5f, 0.5f, 1f);
-        AddButtonFlash(closeBtn);
-        panel.Add(closeBtn);
-        
+        StyleDialogButton(closeBtn, BtnBrightGray);
+        buttonRow.Add(closeBtn);
+
+        panel.Add(buttonRow);
+
+        PolishDialogCard(panel, titleText, "PLAYER INFO", MenuAccentPlayer);
+
         dialog.Add(panel);
         
         // Click background to close
@@ -3971,17 +4104,7 @@ internal static class ScoreboardUtil
         string steamId = player.SteamId?.Value.ToString() ?? "0";
         string playerNumber = player.Number?.Value.ToString() ?? "?";
 
-        // Admin menu header
-        var header = new UnityEngine.UIElements.Label($"ACTIONS TO {playerName}");
-        MakeReadable(header);
-        header.style.fontSize = 16;
-        header.style.unityFontStyleAndWeight = FontStyle.Bold;
-        header.style.marginTop = 4;
-        header.style.marginBottom = 8;
-        header.style.marginLeft = 4;
-        header.style.marginRight = 4;
-        header.style.color = new UnityEngine.UIElements.StyleColor(Color.yellow);
-        menu.Add(header);
+        // The header is added by PolishMenuCard once every row exists, so it matches the player menu.
 
         // BAN STEAM ID button
         var banBtn = new UnityEngine.UIElements.Button(() => {
@@ -4004,6 +4127,15 @@ internal static class ScoreboardUtil
         }) { text = "MUTE" };
         StyleAdminButton(muteBtn, ButtonBg);
         menu.Add(muteBtn);
+
+        var muteDurationCaption = new VisualElement { name = MenuCaptionName };
+        muteDurationCaption.style.paddingLeft = 4;
+        var muteDurationCaptionLabel = new Label("MUTE DURATION");
+        MakeReadable(muteDurationCaptionLabel);
+        muteDurationCaptionLabel.style.fontSize = 11;
+        muteDurationCaptionLabel.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.68f, 0.68f, 0.68f));
+        muteDurationCaption.Add(muteDurationCaptionLabel);
+        menu.Add(muteDurationCaption);
 
         var muteDurationRow = new VisualElement();
         muteDurationRow.style.flexDirection = FlexDirection.Row;
@@ -4028,8 +4160,11 @@ internal static class ScoreboardUtil
         var muteDurationSlider = new UnityEngine.UIElements.Slider(0, muteDurations.Length - 1) { value = currentMuteDurationIndex };
         muteDurationSlider.style.flexGrow = 1;
         muteDurationSlider.style.marginLeft = 10;
-        muteDurationSlider.style.marginRight = 10;
+        muteDurationSlider.style.marginRight = 0;
         StyleSliderLikeBase(muteDurationSlider);
+        // Fit the 36px row's 24px of content box (StyleSliderLikeBase pins 30px).
+        muteDurationSlider.style.height = 24;
+        muteDurationSlider.style.marginTop = 0; muteDurationSlider.style.marginBottom = 0;
 
         muteDurationSlider.RegisterValueChangedCallback(evt =>
         {
@@ -4109,6 +4244,13 @@ internal static class ScoreboardUtil
         StyleAdminButton(closeBtn, BtnBrightGray);
         menu.Add(closeBtn);
 
+        // Same card treatment as the player menu, with an amber accent so the two are never
+        // mistaken for each other at a glance.
+        bool hasAdminNumber = playerNumber != "?" && !string.IsNullOrEmpty(playerNumber);
+        PolishMenuCard(menu,
+            hasAdminNumber ? $"#{playerNumber}  {cleanPlayerName}" : cleanPlayerName,
+            "ADMIN ACTIONS", MenuAccentAdmin);
+
         _attachRoot.Add(menu);
         ChatWhisperUtil.InstallTabSwallow(_clickCatcher);
         ChatWhisperUtil.InstallTabSwallow(menu);
@@ -4133,8 +4275,9 @@ internal static class ScoreboardUtil
         btn.style.paddingBottom = 4;
         btn.style.height = 36;
         btn.style.backgroundColor = new UnityEngine.UIElements.StyleColor(bgColor);
+        // AddButtonFlash alone: it gives the white hover + click flash and restores bgColor, whereas
+        // AddTabHover would repaint the button with the generic row colour and throw bgColor away.
         AddButtonFlash(btn);
-        AddTabHover(btn, () => false);
     }
 
     private static void SendChatCommand(string command)
@@ -4770,43 +4913,449 @@ internal static class ScoreboardUtil
     private static void PlaceMenuNearRow(VisualElement row, VisualElement menu, float marginY)
     {
         if (row == null || menu == null || _attachRoot == null) return;
-        menu.schedule.Execute(() =>
-        {
-            if (_openMenu != menu)
-                return;
 
-            if (row.panel == null || _attachRoot.panel == null)
-            {
-                CloseAllMenus();
-                return;
-            }
+        const float edge = 10f;   // keep this much clear of the screen edges
+        bool faded = false;
+
+        void Position()
+        {
+            if (_openMenu != menu || row.panel == null || _attachRoot.panel == null) return;
 
             Rect rowWB = row.worldBound;
-            if (rowWB.width <= 1f || rowWB.height <= 1f)
-            {
-                CloseAllMenus();
-                return;
-            }
+            Rect pr = _attachRoot.contentRect;
+            if (rowWB.width <= 1f || rowWB.height <= 1f || pr.height <= 1f) return;
+
+            // Hard cap the card to the screen. PolishMenuCard put the rows in a ScrollView, so
+            // anything that doesn't fit stays scrollable rather than being clipped away.
+            menu.style.maxHeight = pr.height - edge * 2f;
+
+            // layout, not contentRect: the card has a 1px border and 6px padding, and clamping
+            // against the content box would let the menu hang 14px off the bottom of the screen.
+            Rect m = menu.layout;
+            if (m.width <= 1f || m.height <= 1f) return;   // not laid out yet
 
             // place menu aligned to left edge of NAME column (same Y)
             Vector2 rootPos = _attachRoot.WorldToLocal(new Vector2(rowWB.xMin, rowWB.yMin));
-            Rect pr = _attachRoot.contentRect;
-            Rect m = menu.contentRect;
+            float left = Mathf.Clamp(rootPos.x + 6f, pr.xMin, Mathf.Max(pr.xMin, pr.xMax - m.width));
 
-            float left = Mathf.Clamp(rootPos.x + 6f, pr.xMin, pr.xMax - m.width);
-            float desiredTop = rootPos.y + marginY;
-            float bottomMargin = 10f; // Minimum margin from bottom of screen
-            
-            // Check if menu would be cut off at the bottom
-            float maxTop = pr.yMax - m.height - bottomMargin;
-            float top = Mathf.Min(desiredTop, maxTop);
-            
-            // Also clamp to not go above the top
-            top = Mathf.Max(top, pr.yMin);
+            // Preferred: top-aligned with the row, so the menu reads as belonging to it. If that
+            // would run off the bottom, flip the menu above the row rather than sliding it up over
+            // the scoreboard - sliding is what left a tall admin menu covering the header.
+            float top = rootPos.y + marginY;
+            if (top + m.height > pr.yMax - edge)
+            {
+                float flipped = rootPos.y - marginY - m.height;
+                top = flipped >= pr.yMin + edge
+                    ? flipped                              // sits above the row
+                    : pr.yMax - edge - m.height;           // neither side fits: pin to the bottom
+            }
+            top = Mathf.Clamp(top, pr.yMin, Mathf.Max(pr.yMin, pr.yMax - m.height));
 
             menu.style.left = left;
             menu.style.top = top;
-        }).Every(50);
+
+            if (faded) return;
+            faded = true;
+            // If PolishMenuCard's safety net already forced the menu visible (placement took longer
+            // than its 250ms), snap instead of animating, otherwise it blinks out and fades twice.
+            if (menu.resolvedStyle.opacity < 0.99f)
+                menu.experimental.animation.Start(0f, 1f, 110, (e, v) => e.style.opacity = v);
+            else
+                menu.style.opacity = 1f;
+        }
+
+        // Re-position on every size change, not just the first one. A card's first laid-out height
+        // is routinely smaller than its final height (rows and text measure over several passes),
+        // and positioning once off that stale value is what let a tall menu run off the bottom of
+        // the screen with no second chance to correct itself. This converges: re-running with an
+        // unchanged size writes the same left/top, which produces no further geometry change.
+        menu.RegisterCallback<GeometryChangedEvent>(_ => Position());
+
+        // Slow tick: drives the first placement and doubles as the watchdog that closes the menu
+        // when the row it belongs to goes away (a player leaving, the scoreboard hiding).
+        UnityEngine.UIElements.IVisualElementScheduledItem item = null;
+        item = menu.schedule.Execute(() =>
+        {
+            if (_openMenu != menu) { item?.Pause(); return; }
+
+            if (row.panel == null || _attachRoot.panel == null) { CloseAllMenus(); return; }
+
+            Rect rowWB = row.worldBound;
+            if (rowWB.width <= 1f || rowWB.height <= 1f) { CloseAllMenus(); return; }
+
+            Position();
+        }).Every(100);
+    }
+
+    // Card treatment for the modal player-info dialogs. Deliberately mirrors PolishMenuCard (same
+    // radius, border, accent bar, header/caption pairing) so every surface the mod draws reads as
+    // one system rather than each dialog carrying its own ad-hoc metrics.
+    // headerHost, when supplied, is where the name/accent header is inserted (at its top) instead
+    // of at the top of the panel - which lets a caller put the header inside a side column.
+    internal static void PolishDialogCard(VisualElement panel, string title, string subtitle, Color accentColor,
+                                          VisualElement headerHost = null)
+    {
+        if (panel == null) return;
+
+        const float cardR = 12f;
+        panel.style.borderTopLeftRadius = cardR; panel.style.borderTopRightRadius = cardR;
+        panel.style.borderBottomLeftRadius = cardR; panel.style.borderBottomRightRadius = cardR;
+        var edge = new UnityEngine.UIElements.StyleColor(new Color(1f, 1f, 1f, 0.10f));
+        panel.style.borderLeftWidth = 1; panel.style.borderRightWidth = 1;
+        panel.style.borderTopWidth = 1; panel.style.borderBottomWidth = 1;
+        panel.style.borderLeftColor = edge; panel.style.borderRightColor = edge;
+        panel.style.borderTopColor = edge; panel.style.borderBottomColor = edge;
+        panel.style.paddingLeft = 16; panel.style.paddingRight = 16;
+        panel.style.paddingTop = 14; panel.style.paddingBottom = 14;
+
+        var header = new VisualElement { name = "LM_DialogHeader" };
+        header.style.flexDirection = FlexDirection.Row;
+        // Stretch, so the accent becomes a full-height rail down the side of the heading block
+        // instead of a stub floating next to a much taller info panel.
+        header.style.alignItems = Align.Stretch;
+        header.style.flexGrow = headerHost != null ? 1 : 0;   // fills the column it was given
+        header.style.marginBottom = 12; header.style.paddingBottom = 12;
+        header.style.borderBottomWidth = 1;
+        header.style.borderBottomColor = new UnityEngine.UIElements.StyleColor(new Color(1f, 1f, 1f, 0.08f));
+        header.style.flexShrink = 0;
+
+        var accent = new VisualElement();
+        accent.style.width = 4; accent.style.marginRight = 12;
+        accent.style.flexShrink = 0;                 // height comes from the stretch above
+        accent.style.backgroundColor = new UnityEngine.UIElements.StyleColor(accentColor);
+        accent.style.borderTopLeftRadius = 2; accent.style.borderTopRightRadius = 2;
+        accent.style.borderBottomLeftRadius = 2; accent.style.borderBottomRightRadius = 2;
+        header.Add(accent);
+
+        var stack = new VisualElement();
+        stack.style.flexDirection = FlexDirection.Column;
+        stack.style.justifyContent = Justify.Center;  // centre the name against the info block
+        stack.style.flexShrink = 1;
+        stack.style.overflow = Overflow.Hidden;
+
+        var titleLabel = new Label(title ?? "");
+        MakeReadable(titleLabel);
+        titleLabel.style.fontSize = 20;
+        titleLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+        titleLabel.style.color = Color.white;
+        titleLabel.style.whiteSpace = WhiteSpace.NoWrap;
+        titleLabel.style.overflow = Overflow.Hidden;
+        titleLabel.style.textOverflow = TextOverflow.Ellipsis;
+        stack.Add(titleLabel);
+
+        if (!string.IsNullOrEmpty(subtitle))
+        {
+            var sub = new Label(subtitle);
+            MakeReadable(sub);
+            sub.style.fontSize = 11;
+            sub.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.66f, 0.66f, 0.66f));
+            sub.style.whiteSpace = WhiteSpace.NoWrap;
+            sub.style.marginTop = 2;
+            stack.Add(sub);
+        }
+
+        header.Add(stack);
+
+        if (headerHost != null) headerHost.Insert(0, header);
+        else panel.Insert(0, header);
+
+        // Match the menus' entrance so opening a dialog doesn't snap in harder than opening a menu.
+        panel.style.opacity = 0f;
+        panel.schedule.Execute(() =>
+            panel.experimental.animation.Start(0f, 1f, 120, (e, v) => e.style.opacity = v)).ExecuteLater(0);
+    }
+
+    // One button shape for the info dialogs, so they stop mixing 50px square buttons in three
+    // different widths and two one-off colours.
+    internal static void StyleDialogButton(UnityEngine.UIElements.Button b, Color bg, float minWidth = 120f)
+    {
+        if (b == null) return;
+        MakeReadable(b);
+        b.style.height = 38;
+        b.style.minWidth = minWidth;
+        b.style.paddingLeft = 14; b.style.paddingRight = 14;
+        b.style.paddingTop = 0; b.style.paddingBottom = 0;
+        b.style.marginLeft = 4; b.style.marginRight = 4;
+        b.style.unityTextAlign = TextAnchor.MiddleCenter;
+        b.style.whiteSpace = WhiteSpace.NoWrap;
+        const float br = 6f;
+        b.style.borderTopLeftRadius = br; b.style.borderTopRightRadius = br;
+        b.style.borderBottomLeftRadius = br; b.style.borderBottomRightRadius = br;
+        b.style.backgroundColor = new UnityEngine.UIElements.StyleColor(bg);
+        AddButtonFlash(b);   // after the colour is set - it captures the base to restore
+    }
+
+    // Read-only value field for the info dialogs. The value must stay selectable (that's the whole
+    // point of a TextField here - you copy the Steam ID out of it), but a TextField draws its text
+    // in an inner "unity-text-input" element carrying the theme's own colour, so MakeReadable on
+    // the field alone left the value effectively invisible on the dark card.
+    private static void StyleDialogField(UnityEngine.UIElements.TextField field)
+    {
+        if (field == null) return;
+        MakeReadable(field);
+        field.style.marginBottom = 8;
+        field.style.flexShrink = 0;
+        StyleTextFieldInput(field, new Color(0f, 0f, 0f, 0.35f));
+
+        // The "STEAM ID" caption is a child Label, and it inherits nothing useful by default.
+        var caption = field.labelElement;
+        if (caption != null)
+        {
+            MakeReadable(caption);
+            caption.style.fontSize = 11;
+            caption.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.62f, 0.62f, 0.62f));
+            caption.style.minWidth = 104;
+        }
+    }
+
+    /// <summary>poncepuck.net career stats for a player, as extra rows appended to an info section.
+    /// The leaderboards load lazily and asynchronously, so this renders a placeholder immediately and
+    /// refills itself when the feed lands (or when it turns out the player has no logged games).</summary>
+    internal static void AddPonceStatRows(VisualElement infoSection, string steamId)
+    {
+        if (infoSection == null || !HasUsableSteamId(steamId)) return;
+
+        var block = new VisualElement { name = "LM_PonceStats" };
+        infoSection.Add(block);
+
+        Action refill = null;
+        refill = () =>
+        {
+            block.Clear();
+
+            if (!PonceSite.StatsReady)
+            {
+                var loading = new Label("loading…");
+                MakeReadable(loading);
+                loading.style.fontSize = 11;
+                loading.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.55f, 0.55f, 0.55f));
+                loading.style.marginTop = 6;
+                block.Add(loading);
+                return;
+            }
+
+            var s = PonceSite.GetStats(steamId);
+            if (s == null || (!s.HasSkater && !s.HasGoalie))
+            {
+                var none = new Label("no games logged on poncepuck.net");
+                MakeReadable(none);
+                none.style.fontSize = 11;
+                none.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.55f, 0.55f, 0.55f));
+                none.style.marginTop = 6;
+                block.Add(none);
+                return;
+            }
+
+            if (s.HasSkater)
+            {
+                block.Add(MakeInfoRow("GAMES", s.Gp.ToString()));
+                block.Add(MakeInfoRow("GOALS", s.Goals.ToString()));
+                block.Add(MakeInfoRow("ASSISTS", s.Assists.ToString()));
+                block.Add(MakeInfoRow("POINTS",
+                    s.Rank > 0 ? $"{s.Points}   (#{s.Rank})" : s.Points.ToString()));
+            }
+            if (s.HasGoalie)
+            {
+                block.Add(MakeInfoRow("GOALIE GP", s.GoalieGp.ToString()));
+                block.Add(MakeInfoRow("SAVES", s.Saves.ToString()));
+                block.Add(MakeInfoRow("SHUTOUTS", s.Shutouts.ToString()));
+            }
+        };
+
+        // Repaint when the feed arrives, and drop the subscription with the dialog so a closed
+        // dialog can't keep a dead closure (and its whole element tree) alive.
+        Action onChanged = () => { try { refill(); } catch { } };
+        PonceSite.StatsChanged += onChanged;
+        block.RegisterCallback<UnityEngine.UIElements.DetachFromPanelEvent>(_ => PonceSite.StatsChanged -= onChanged);
+
+        refill();
+        PonceSite.EnsureStats();
+    }
+
+    // The panel the info rows live in. Shared so the two dialogs that show it can't drift apart.
+    internal static VisualElement MakeInfoSection()
+    {
+        var s = new VisualElement();
+        s.style.backgroundColor = new UnityEngine.UIElements.StyleColor(new Color(1f, 1f, 1f, 0.06f));
+        s.style.paddingLeft = 16; s.style.paddingRight = 16;
+        s.style.paddingTop = 12; s.style.paddingBottom = 8;
+        s.style.borderTopLeftRadius = 10; s.style.borderTopRightRadius = 10;
+        s.style.borderBottomLeftRadius = 10; s.style.borderBottomRightRadius = 10;
+        var edge = new UnityEngine.UIElements.StyleColor(new Color(1f, 1f, 1f, 0.07f));
+        s.style.borderLeftWidth = 1; s.style.borderRightWidth = 1;
+        s.style.borderTopWidth = 1; s.style.borderBottomWidth = 1;
+        s.style.borderLeftColor = edge; s.style.borderRightColor = edge;
+        s.style.borderTopColor = edge; s.style.borderBottomColor = edge;
+        s.style.flexShrink = 1;
+        return s;
+    }
+
+    // "value    FIELD" line for the info dialogs: the value reads first on the left, with the grey
+    // field name pushed out to the right edge. Replaces rows of uniformly bold 18px text where
+    // every field shouted equally and long values ran into each other.
+    internal static VisualElement MakeInfoRow(string key, string value)
+    {
+        var row = new VisualElement();
+        row.style.flexDirection = FlexDirection.Row;
+        row.style.alignItems = Align.Center;
+        row.style.justifyContent = Justify.SpaceBetween;
+        row.style.marginBottom = 8;
+
+        var v = new Label(string.IsNullOrWhiteSpace(value) ? "—" : value);
+        MakeReadable(v);
+        v.style.fontSize = 15;
+        v.style.color = Color.white;
+        v.style.flexShrink = 1;
+        v.style.whiteSpace = WhiteSpace.Normal;
+        row.Add(v);
+
+        var k = new Label(key);
+        MakeReadable(k);
+        k.style.fontSize = 10;
+        k.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.58f, 0.58f, 0.58f));
+        k.style.flexShrink = 0;
+        k.style.marginLeft = 24;
+        k.style.marginTop = 2;                       // optical baseline against the larger value
+        k.style.unityTextAlign = TextAnchor.MiddleRight;
+        row.Add(k);
+        return row;
+    }
+
+    // Marks a menu child as a section caption rather than a card row, so PolishMenuCard leaves it
+    // as plain text instead of giving it a row background height and rounded corners.
+    internal const string MenuCaptionName = "LM_MenuCaption";
+
+    // Accent colours that tell the two scoreboard menus apart at a glance.
+    internal static readonly Color MenuAccentPlayer = new Color(0.40f, 0.70f, 1.00f, 1f); // blue
+    internal static readonly Color MenuAccentAdmin  = new Color(1.00f, 0.78f, 0.25f, 1f); // amber
+
+    // Shared card treatment for the scoreboard pop-up menus (player menu and admin menu): rounded
+    // card + subtle border, a header showing who the menu acts on, evenly-spaced rounded rows, and
+    // a fade-in (triggered by PlaceMenuNearRow once the menu is positioned). Call this AFTER every
+    // row has been added so it can style all of them uniformly.
+    private static void PolishMenuCard(VisualElement menu, string title, string subtitle, Color accentColor)
+    {
+        if (menu == null) return;
+
+        const float cardR = 10f;
+        menu.style.borderTopLeftRadius = cardR; menu.style.borderTopRightRadius = cardR;
+        menu.style.borderBottomLeftRadius = cardR; menu.style.borderBottomRightRadius = cardR;
+        var edge = new UnityEngine.UIElements.StyleColor(new Color(1f, 1f, 1f, 0.10f));
+        menu.style.borderLeftWidth = 1; menu.style.borderRightWidth = 1;
+        menu.style.borderTopWidth = 1; menu.style.borderBottomWidth = 1;
+        menu.style.borderLeftColor = edge; menu.style.borderRightColor = edge;
+        menu.style.borderTopColor = edge; menu.style.borderBottomColor = edge;
+        menu.style.paddingLeft = 6; menu.style.paddingRight = 6;
+        menu.style.paddingTop = 6; menu.style.paddingBottom = 6;
+
+        // Header: accent bar + title, with an optional caption under it.
+        var header = new VisualElement { name = "LM_MenuHeader" };
+        header.style.flexDirection = FlexDirection.Row;
+        header.style.alignItems = Align.Center;
+        header.style.marginLeft = 2; header.style.marginRight = 2;
+        header.style.marginBottom = 6; header.style.paddingBottom = 6;
+        header.style.borderBottomWidth = 1;
+        header.style.borderBottomColor = new UnityEngine.UIElements.StyleColor(new Color(1f, 1f, 1f, 0.08f));
+
+        var accent = new VisualElement();
+        accent.style.width = 3; accent.style.marginRight = 8;
+        accent.style.height = string.IsNullOrEmpty(subtitle) ? 16 : 28;
+        accent.style.flexShrink = 0;
+        accent.style.backgroundColor = new UnityEngine.UIElements.StyleColor(accentColor);
+        accent.style.borderTopLeftRadius = 2; accent.style.borderTopRightRadius = 2;
+        accent.style.borderBottomLeftRadius = 2; accent.style.borderBottomRightRadius = 2;
+        header.Add(accent);
+
+        var titleStack = new VisualElement();
+        titleStack.style.flexDirection = FlexDirection.Column;
+        titleStack.style.flexShrink = 1;
+        titleStack.style.overflow = Overflow.Hidden;
+
+        var titleLabel = new Label(title ?? "");
+        MakeReadable(titleLabel);
+        titleLabel.style.fontSize = 16;
+        titleLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+        titleLabel.style.color = Color.white;
+        titleLabel.style.whiteSpace = WhiteSpace.NoWrap;
+        titleLabel.style.overflow = Overflow.Hidden;
+        titleLabel.style.textOverflow = TextOverflow.Ellipsis;
+        titleLabel.style.flexShrink = 1;
+        titleStack.Add(titleLabel);
+
+        if (!string.IsNullOrEmpty(subtitle))
+        {
+            var subLabel = new Label(subtitle);
+            MakeReadable(subLabel);
+            subLabel.style.fontSize = 11;
+            subLabel.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.68f, 0.68f, 0.68f));
+            subLabel.style.whiteSpace = WhiteSpace.NoWrap;
+            subLabel.style.marginTop = 1;
+            titleStack.Add(subLabel);
+        }
+
+        header.Add(titleStack);
+        menu.Insert(0, header);
+
+        // Uniform rounded corners, height and spacing on every row below the header, so buttons and
+        // the slider rows line up as one grid instead of each carrying its own ad-hoc metrics.
+        const float rowH = 36f;
+        foreach (var child in menu.Children())
+        {
+            if (child.name == "LM_MenuHeader") continue;
+
+            // Section captions (e.g. "PLAYER VOLUME") are plain text, not a card row.
+            if (child.name == MenuCaptionName)
+            {
+                child.style.marginLeft = 4; child.style.marginRight = 4;
+                child.style.marginTop = 6; child.style.marginBottom = 2;
+                continue;
+            }
+
+            const float br = 6f;
+            child.style.borderTopLeftRadius = br; child.style.borderTopRightRadius = br;
+            child.style.borderBottomLeftRadius = br; child.style.borderBottomRightRadius = br;
+            child.style.marginLeft = 2; child.style.marginRight = 2;
+            child.style.marginTop = 3; child.style.marginBottom = 3;
+            child.style.height = rowH;
+
+            if (child is UnityEngine.UIElements.Button b)
+            {
+                b.style.paddingTop = 0; b.style.paddingBottom = 0;
+                b.style.unityTextAlign = TextAnchor.MiddleCenter;
+            }
+        }
+
+        // Host the rows in a ScrollView (header stays pinned above it) so PlaceMenuNearRow can cap
+        // the card to the screen height without any row becoming unreachable. When everything fits
+        // this is invisible - the scroller only appears once the content actually overflows.
+        var scroll = new UnityEngine.UIElements.ScrollView(UnityEngine.UIElements.ScrollViewMode.Vertical)
+        {
+            name = "LM_MenuScroll"
+        };
+        scroll.style.flexGrow = 0;      // size to content...
+        scroll.style.flexShrink = 1;    // ...but give way to the card's maxHeight
+        scroll.style.minHeight = 0;     // required, or flexShrink can't take effect
+        scroll.horizontalScrollerVisibility = UnityEngine.UIElements.ScrollerVisibility.Hidden;
+
+        // Snapshot first: reparenting mutates the collection we'd otherwise be enumerating.
+        var rows = new List<VisualElement>();
+        foreach (var child in menu.Children())
+            if (child.name != "LM_MenuHeader") rows.Add(child);
+        foreach (var r in rows)
+        {
+            r.RemoveFromHierarchy();
+            scroll.Add(r);
+        }
+        menu.Add(scroll);
+
+        // Start hidden; PlaceMenuNearRow fades it in once positioned (no first-frame flash).
+        // Safety net so it can never get stuck invisible if placement never fades it.
+        menu.style.opacity = 0f;
+        menu.schedule.Execute(() =>
+        {
+            if (_openMenu == menu && menu.resolvedStyle.opacity < 0.01f)
+                menu.style.opacity = 1f;
+        }).StartingIn(250);
     }
 
     // Mask scoreboard VEs so pointer events go to our overlay (like your panel does).  // :contentReference[oaicite:4]{index=4}
@@ -4866,6 +5415,50 @@ internal static class ScoreboardUtil
         }
         catch (Exception e) { Debug.LogError("[LocalMute] RefreshRowForSteamId error: " + e); }
     }
+    private const string PonceBadgeName = "LM_PonceBadge";
+
+    /// <summary>Show the player's poncepuck.net role next to their scoreboard name. Idempotent: the
+    /// previous badge is removed first, so repeated scoreboard refreshes can't stack them.</summary>
+    private static void ApplyPonceBadge(Label nameLabel, Player player)
+    {
+        try
+        {
+            var host = nameLabel?.parent;
+            if (host == null) return;
+
+            for (int i = host.childCount - 1; i >= 0; i--)
+                if (host[i].name == PonceBadgeName) host[i].RemoveFromHierarchy();
+
+            if (!PonceSite.BadgesReady) { PonceSite.EnsureBadges(); return; }
+
+            string sid = null;
+            try { sid = player.SteamId?.Value.ToString(); } catch { }
+            string badge = PonceSite.GetBadge(sid);
+            if (string.IsNullOrEmpty(badge)) return;
+
+            var lbl = new Label(badge) { name = PonceBadgeName };
+            MakeReadable(lbl);
+            lbl.style.fontSize = 9;
+            lbl.style.unityFontStyleAndWeight = FontStyle.Bold;
+            lbl.style.color = new UnityEngine.UIElements.StyleColor(PonceSite.BadgeColor(badge));
+            lbl.style.marginLeft = 6;
+            lbl.style.paddingLeft = 4; lbl.style.paddingRight = 4;
+            lbl.style.flexShrink = 0;
+            lbl.style.unityTextAlign = TextAnchor.MiddleCenter;
+            lbl.style.whiteSpace = WhiteSpace.NoWrap;
+            lbl.pickingMode = PickingMode.Ignore;   // must not swallow the row's click-to-open-menu
+            var tint = PonceSite.BadgeColor(badge);
+            lbl.style.backgroundColor = new UnityEngine.UIElements.StyleColor(new Color(tint.r, tint.g, tint.b, 0.14f));
+            lbl.style.borderTopLeftRadius = 3; lbl.style.borderTopRightRadius = 3;
+            lbl.style.borderBottomLeftRadius = 3; lbl.style.borderBottomRightRadius = 3;
+
+            int idx = host.IndexOf(nameLabel);
+            if (idx >= 0 && idx + 1 <= host.childCount) host.Insert(idx + 1, lbl);
+            else host.Add(lbl);
+        }
+        catch (Exception e) { Debug.LogWarning("[Ponce] badge failed: " + e.Message); }
+    }
+
     public static void ApplyPlayerStyling_NameOnly(VisualElement row, Player player, bool muted, bool saved)
     {
         try
@@ -4883,6 +5476,11 @@ internal static class ScoreboardUtil
                 .Replace("<s>", "").Replace("</s>", "")
                 .Replace("<u>", "").Replace("</u>", "")
                 .Replace("<color=#808080>", "").Replace("</color>", "");
+
+            // poncepuck.net role badge. Rendered as a SIBLING element, never appended to the name:
+            // this method re-derives cleanText from nameLabel.text on every scoreboard refresh, so a
+            // suffix baked into the text would survive the clean and stack up ("Ami MOD MOD MOD").
+            ApplyPonceBadge(nameLabel, player);
 
             // Apply styling based on status
             // Saved players always appear normal (no styling)

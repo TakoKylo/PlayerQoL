@@ -63,16 +63,6 @@ namespace PoncePuck.Keybinds
         [NonSerialized]
         public List<PositionSettingEntry> positionSettings = new List<PositionSettingEntry>();
 
-        // Trusted-server mod fingerprints for the per-server "MODS REQUIRED"
-        // popup suppression (MissingModsPopupSuppression.cs). On disk as a flat
-        // List<string> in "ip:port|sortedCSV-of-modIds" form because JsonUtility
-        // can't serialize Dictionary<string,string> directly. ParseTrustedServerMods /
-        // SerializeTrustedServerMods bridge to/from the runtime dict.
-        public List<string> trustedServerModsRaw = new List<string>();
-
-        [NonSerialized]
-        public Dictionary<string, string> trustedServerMods = new Dictionary<string, string>();
-        
         // Call this after loading to parse raw strings into entries
         public void ParsePositionSettings()
         {
@@ -118,37 +108,6 @@ namespace PoncePuck.Keybinds
             }
         }
         
-        // Rebuild the runtime trustedServerMods dict from the on-disk raw list.
-        // Format per entry: "ip:port|sortedCSV-of-modIds". The first '|' splits
-        // key from value so the mod-id CSV can contain anything (no further
-        // splitting on '|' inside the value, though sorted IDs don't use it).
-        public void ParseTrustedServerMods()
-        {
-            trustedServerMods = new Dictionary<string, string>();
-            if (trustedServerModsRaw == null) return;
-            foreach (var raw in trustedServerModsRaw)
-            {
-                if (string.IsNullOrEmpty(raw)) continue;
-                int sep = raw.IndexOf('|');
-                if (sep <= 0) continue;
-                string key = raw.Substring(0, sep);
-                string value = (sep + 1 < raw.Length) ? raw.Substring(sep + 1) : "";
-                if (!string.IsNullOrEmpty(key))
-                    trustedServerMods[key] = value;
-            }
-        }
-
-        public void SerializeTrustedServerMods()
-        {
-            trustedServerModsRaw = new List<string>();
-            if (trustedServerMods == null) return;
-            foreach (var kv in trustedServerMods)
-            {
-                if (string.IsNullOrEmpty(kv.Key)) continue;
-                trustedServerModsRaw.Add($"{kv.Key}|{kv.Value ?? ""}");
-            }
-        }
-
         private static HockeyPosition ParsePosition(string s)
         {
             switch (s.ToUpper())
