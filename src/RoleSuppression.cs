@@ -625,6 +625,17 @@ namespace PoncePuck.Keybinds
                     _appliedMinimapScale = true;
                 }
                 
+                // A position override is meant to be RUNTIME-ONLY, but every SettingsManager.Update*
+                // setter persists as a side effect - e.g. UpdateMinimapHorizontalPosition does
+                // "MinimapHorizontalPosition = value; SaveManager.SetFloat("minimapHorizontalPosition", ...)".
+                // So applying an override silently rewrote the player's own saved preference, and
+                // anything that stopped us restoring (quitting the game while in an overridden
+                // position, a crash, a missed role event) made the override permanent - the next
+                // launch then read it back as the new "base".
+                // Put the player's real values back on disk straight away: the live value stays
+                // overridden, but what is SAVED is always what the player chose.
+                PreserveSavedBaselines();
+
                 Debug.Log($"[PPKB] Applied settings for {position}: FOV={_appliedFOV}, Angle={_appliedCameraAngle}, Hand={_appliedHandedness}, Stick={_appliedStickSens}, Look={_appliedLookSens}");
             }
             catch (Exception ex)
@@ -634,6 +645,52 @@ namespace PoncePuck.Keybinds
         }
         
         // Restore any settings that were overridden back to base (your preferred game settings)
+        /// <summary>Re-write the player's own values into the save file for every setting we are
+        /// currently overriding. The game's setters persist on each call, so without this an
+        /// override leaks into the player's saved preferences permanently. Only the on-disk value
+        /// is touched - the live (overridden) value is left alone.</summary>
+        private void PreserveSavedBaselines()
+        {
+            try
+            {
+                if (_appliedFOV)               SaveManager.SetFloat("fov", _baseFOV);
+                if (_appliedCameraAngle)       SaveManager.SetFloat("cameraAngle", _baseCameraAngle);
+                if (_appliedStickSens)         SaveManager.SetFloat("globalStickSensitivity", _baseStickSens);
+                if (_appliedLookSens)          SaveManager.SetFloat("lookSensitivity", _baseLookSens);
+                if (_appliedChatOpacity)       SaveManager.SetFloat("chatOpacity", _baseChatOpacity);
+                if (_appliedChatScale)         SaveManager.SetFloat("chatScale", _baseChatScale);
+                if (_appliedMinimapOpacity)    SaveManager.SetFloat("minimapOpacity", _baseMinimapOpacity);
+                if (_appliedMinimapBgOpacity)  SaveManager.SetFloat("minimapBackgroundOpacity", _baseMinimapBgOpacity);
+                if (_appliedMinimapHPos)       SaveManager.SetFloat("minimapHorizontalPosition", _baseMinimapHPos);
+                if (_appliedMinimapVPos)       SaveManager.SetFloat("minimapVerticalPosition", _baseMinimapVPos);
+                if (_appliedMinimapScale)      SaveManager.SetFloat("minimapScale", _baseMinimapScale);
+
+                // Handedness persists via SaveManager.SetEnum("handedness", ...). Its base is a
+                // string here, so re-save it through the game's own setter path only if we can map
+                // it back cleanly; otherwise leave it - restoring on position change still covers it.
+                if (_appliedHandedness && !string.IsNullOrEmpty(_baseHandedness))
+                    PreserveSavedHandedness(_baseHandedness);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[PPKB] Failed to preserve saved baselines: {ex.Message}");
+            }
+        }
+
+        // Typed on purpose: the enum is PlayerHandedness, and a reflection lookup by the wrong name
+        // would just silently no-op instead of failing the build.
+        private void PreserveSavedHandedness(string baseHandedness)
+        {
+            try
+            {
+                if (Enum.TryParse(baseHandedness, true, out PlayerHandedness val))
+                    SaveManager.SetEnum("handedness", val);
+                else
+                    DebugLog($"[PPKB] PreserveSavedHandedness: unrecognised value '{baseHandedness}'");
+            }
+            catch (Exception ex) { DebugLog($"[PPKB] PreserveSavedHandedness error: {ex.Message}"); }
+        }
+
         private void RestoreOverriddenSettings()
         {
             try
