@@ -2688,55 +2688,6 @@ internal static class ScoreboardUtil
     }
     // (Reference: same approach as your Keybinds panel to normalize text & foreground UI.)  // :contentReference[oaicite:2]{index=2}
 
-    // ===== poncepuck.net profile links =====
-    private const string PonceProfileBaseUrl = "https://poncepuck.net/profile/";
-
-    /// <summary>True when a stored Steam ID is something we can actually build a profile link from.
-    /// Several call sites default a missing id to the literal string "0", which parses as a valid
-    /// ulong, so a plain TryParse is not enough of a guard on its own.</summary>
-    internal static bool HasUsableSteamId(string steamId)
-    {
-        return !string.IsNullOrWhiteSpace(steamId)
-            && ulong.TryParse(steamId.Trim(), out ulong id)
-            && id != 0UL;
-    }
-
-    /// <summary>Open a player's poncepuck.net profile. Prefers the in-game Steam overlay browser so
-    /// the player isn't alt-tabbed out mid-game, and falls back to the system browser otherwise.
-    /// The IsOverlayEnabled() probe is what makes that fallback reachable: with the overlay turned
-    /// off, ActivateGameOverlayToWebPage returns normally and simply does nothing, so there is no
-    /// exception or return value to detect the failure with.</summary>
-    internal static void OpenPonceProfile(string steamId)
-    {
-        if (!HasUsableSteamId(steamId))
-        {
-            Debug.LogWarning($"[LocalMute] Can't open Ponce profile - no usable Steam ID ('{steamId}')");
-            return;
-        }
-
-        string url = PonceProfileBaseUrl + steamId.Trim();
-        try
-        {
-            if (Steamworks.SteamUtils.IsOverlayEnabled())
-            {
-                Steamworks.SteamFriends.ActivateGameOverlayToWebPage(url);
-                LogHelper.Log($"[LocalMute] Opened Ponce profile in Steam overlay: {url}");
-                return;
-            }
-        }
-        catch { /* Steam API not initialised for this process - fall through to the browser */ }
-
-        try
-        {
-            Application.OpenURL(url);
-            LogHelper.Log($"[LocalMute] Opened Ponce profile in browser: {url}");
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"[LocalMute] Failed to open Ponce profile '{url}': {e.Message}");
-        }
-    }
-
     // ===== Strip [D] and [A] tags from player names for admin commands =====
     private static string StripAdminTags(string playerName)
     {
@@ -3236,27 +3187,6 @@ internal static class ScoreboardUtil
         AddTabHover(profileBtn, () => false);
         menu.Add(profileBtn);
 
-        // PONCE PROFILE - poncepuck.net. Only offered when we actually have the player's Steam ID;
-        // this menu defaults a missing one to "0", which would link to a nonexistent profile.
-        if (HasUsableSteamId(steamId))
-        {
-            var ponceBtn = new UnityEngine.UIElements.Button(() =>
-            {
-                OpenPonceProfile(steamId);
-                CloseAllMenus();
-            });
-            ponceBtn.text = "PONCE PROFILE";
-            MakeReadable(ponceBtn);
-            ponceBtn.style.marginTop = 4; ponceBtn.style.marginBottom = 4;
-            ponceBtn.style.marginLeft = 4; ponceBtn.style.marginRight = 4;
-            ponceBtn.style.paddingLeft = 6; ponceBtn.style.paddingTop = 6;
-            ponceBtn.style.paddingBottom = 4; ponceBtn.style.height = 40;
-            ponceBtn.style.backgroundColor = new UnityEngine.UIElements.StyleColor(BtnBrightGray);
-            AddButtonFlash(ponceBtn);
-            AddTabHover(ponceBtn, () => false);
-            menu.Add(ponceBtn);
-        }
-
         // INFO button - shows highlightable dialog with player info
         var infoBtn = new UnityEngine.UIElements.Button(() => { 
             // Open the KeybindRunner panel using reflection
@@ -3632,7 +3562,6 @@ internal static class ScoreboardUtil
         infoSection.Add(MakeInfoRow("LAST SEEN", $"{player.lastSeen:MM/dd/yy HH:mm:ss}"));
         infoSection.Add(MakeInfoRow("LAST SERVER", LocalMuteStore.CleanServerName(player.lastServerSeen)));
         infoSection.Add(MakeInfoRow("STEAM ID", player.steamId));
-        AddPonceStatRows(infoSection, player.steamId);
 
         // Two panes: a fixed-width left column carrying the name + every field, and NOTES taking
         // all the remaining width. Notes is the part you actually read and type in, so it gets the
@@ -3737,9 +3666,8 @@ internal static class ScoreboardUtil
                 notesPane.Add(notesContainer);
                 infoPanel.Add(body);
 
-        // Button row. Wraps: with the Ponce button this row carries five entries, which overflows
-        // the card at its narrow end. marginTop keeps the body off the footer - without it the
-        // info card grows right up against the buttons.
+        // Button row. Wraps so the buttons can't overflow the card at its narrow end. marginTop keeps
+        // the body off the footer - without it the info card grows right up against the buttons.
         var buttonRow = new VisualElement();
         buttonRow.style.flexDirection = FlexDirection.Row;
         buttonRow.style.flexWrap = Wrap.Wrap;
@@ -3778,15 +3706,6 @@ internal static class ScoreboardUtil
         profileBtn.text = "STEAM PROFILE";
         StyleDialogButton(profileBtn, ButtonBg);
         buttonRow.Add(profileBtn);
-
-        // PONCE PROFILE - poncepuck.net, shown only when the stored Steam ID is usable.
-        if (HasUsableSteamId(player.steamId))
-        {
-            var poncePvBtn = new UnityEngine.UIElements.Button(() => OpenPonceProfile(player.steamId))
-            { text = "PONCE PROFILE" };
-            StyleDialogButton(poncePvBtn, ButtonBg);
-            buttonRow.Add(poncePvBtn);
-        }
 
         // Copy Steam ID button
         var copySteamIdBtn = new UnityEngine.UIElements.Button(() =>
@@ -4009,14 +3928,6 @@ internal static class ScoreboardUtil
         }) { text = "OPEN STEAM PROFILE" };
         StyleDialogButton(profileBtn, new Color(0.20f, 0.40f, 0.60f, 1f), 180f);
         buttonRow.Add(profileBtn);
-
-        if (HasUsableSteamId(steamId))
-        {
-            var poncePvBtn = new UnityEngine.UIElements.Button(() => OpenPonceProfile(steamId))
-            { text = "PONCE PROFILE" };
-            StyleDialogButton(poncePvBtn, ButtonBg, 150f);
-            buttonRow.Add(poncePvBtn);
-        }
 
         // CLOSE button
         var closeBtn = new UnityEngine.UIElements.Button(() => {
@@ -5108,70 +5019,6 @@ internal static class ScoreboardUtil
         }
     }
 
-    /// <summary>poncepuck.net career stats for a player, as extra rows appended to an info section.
-    /// The leaderboards load lazily and asynchronously, so this renders a placeholder immediately and
-    /// refills itself when the feed lands (or when it turns out the player has no logged games).</summary>
-    internal static void AddPonceStatRows(VisualElement infoSection, string steamId)
-    {
-        if (infoSection == null || !HasUsableSteamId(steamId)) return;
-
-        var block = new VisualElement { name = "LM_PonceStats" };
-        infoSection.Add(block);
-
-        Action refill = null;
-        refill = () =>
-        {
-            block.Clear();
-
-            if (!PonceSite.StatsReady)
-            {
-                var loading = new Label("loading…");
-                MakeReadable(loading);
-                loading.style.fontSize = 11;
-                loading.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.55f, 0.55f, 0.55f));
-                loading.style.marginTop = 6;
-                block.Add(loading);
-                return;
-            }
-
-            var s = PonceSite.GetStats(steamId);
-            if (s == null || (!s.HasSkater && !s.HasGoalie))
-            {
-                var none = new Label("no games logged on poncepuck.net");
-                MakeReadable(none);
-                none.style.fontSize = 11;
-                none.style.color = new UnityEngine.UIElements.StyleColor(new Color(0.55f, 0.55f, 0.55f));
-                none.style.marginTop = 6;
-                block.Add(none);
-                return;
-            }
-
-            if (s.HasSkater)
-            {
-                block.Add(MakeInfoRow("GAMES", s.Gp.ToString()));
-                block.Add(MakeInfoRow("GOALS", s.Goals.ToString()));
-                block.Add(MakeInfoRow("ASSISTS", s.Assists.ToString()));
-                block.Add(MakeInfoRow("POINTS",
-                    s.Rank > 0 ? $"{s.Points}   (#{s.Rank})" : s.Points.ToString()));
-            }
-            if (s.HasGoalie)
-            {
-                block.Add(MakeInfoRow("GOALIE GP", s.GoalieGp.ToString()));
-                block.Add(MakeInfoRow("SAVES", s.Saves.ToString()));
-                block.Add(MakeInfoRow("SHUTOUTS", s.Shutouts.ToString()));
-            }
-        };
-
-        // Repaint when the feed arrives, and drop the subscription with the dialog so a closed
-        // dialog can't keep a dead closure (and its whole element tree) alive.
-        Action onChanged = () => { try { refill(); } catch { } };
-        PonceSite.StatsChanged += onChanged;
-        block.RegisterCallback<UnityEngine.UIElements.DetachFromPanelEvent>(_ => PonceSite.StatsChanged -= onChanged);
-
-        refill();
-        PonceSite.EnsureStats();
-    }
-
     // The panel the info rows live in. Shared so the two dialogs that show it can't drift apart.
     internal static VisualElement MakeInfoSection()
     {
@@ -5415,49 +5262,6 @@ internal static class ScoreboardUtil
         }
         catch (Exception e) { Debug.LogError("[LocalMute] RefreshRowForSteamId error: " + e); }
     }
-    private const string PonceBadgeName = "LM_PonceBadge";
-
-    /// <summary>Show the player's poncepuck.net role next to their scoreboard name. Idempotent: the
-    /// previous badge is removed first, so repeated scoreboard refreshes can't stack them.</summary>
-    private static void ApplyPonceBadge(Label nameLabel, Player player)
-    {
-        try
-        {
-            var host = nameLabel?.parent;
-            if (host == null) return;
-
-            for (int i = host.childCount - 1; i >= 0; i--)
-                if (host[i].name == PonceBadgeName) host[i].RemoveFromHierarchy();
-
-            if (!PonceSite.BadgesReady) { PonceSite.EnsureBadges(); return; }
-
-            string sid = null;
-            try { sid = player.SteamId?.Value.ToString(); } catch { }
-            string badge = PonceSite.GetBadge(sid);
-            if (string.IsNullOrEmpty(badge)) return;
-
-            var lbl = new Label(badge) { name = PonceBadgeName };
-            MakeReadable(lbl);
-            lbl.style.fontSize = 9;
-            lbl.style.unityFontStyleAndWeight = FontStyle.Bold;
-            lbl.style.color = new UnityEngine.UIElements.StyleColor(PonceSite.BadgeColor(badge));
-            lbl.style.marginLeft = 6;
-            lbl.style.paddingLeft = 4; lbl.style.paddingRight = 4;
-            lbl.style.flexShrink = 0;
-            lbl.style.unityTextAlign = TextAnchor.MiddleCenter;
-            lbl.style.whiteSpace = WhiteSpace.NoWrap;
-            lbl.pickingMode = PickingMode.Ignore;   // must not swallow the row's click-to-open-menu
-            var tint = PonceSite.BadgeColor(badge);
-            lbl.style.backgroundColor = new UnityEngine.UIElements.StyleColor(new Color(tint.r, tint.g, tint.b, 0.14f));
-            lbl.style.borderTopLeftRadius = 3; lbl.style.borderTopRightRadius = 3;
-            lbl.style.borderBottomLeftRadius = 3; lbl.style.borderBottomRightRadius = 3;
-
-            int idx = host.IndexOf(nameLabel);
-            if (idx >= 0 && idx + 1 <= host.childCount) host.Insert(idx + 1, lbl);
-            else host.Add(lbl);
-        }
-        catch (Exception e) { Debug.LogWarning("[Ponce] badge failed: " + e.Message); }
-    }
 
     public static void ApplyPlayerStyling_NameOnly(VisualElement row, Player player, bool muted, bool saved)
     {
@@ -5476,11 +5280,6 @@ internal static class ScoreboardUtil
                 .Replace("<s>", "").Replace("</s>", "")
                 .Replace("<u>", "").Replace("</u>", "")
                 .Replace("<color=#808080>", "").Replace("</color>", "");
-
-            // poncepuck.net role badge. Rendered as a SIBLING element, never appended to the name:
-            // this method re-derives cleanText from nameLabel.text on every scoreboard refresh, so a
-            // suffix baked into the text would survive the clean and stack up ("Ami MOD MOD MOD").
-            ApplyPonceBadge(nameLabel, player);
 
             // Apply styling based on status
             // Saved players always appear normal (no styling)

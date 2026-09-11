@@ -33,9 +33,7 @@ namespace PoncePuck.Keybinds
         private UITK.VisualElement _prefRowsRoot;
         private UITK.VisualElement _tabBar;
         private UITK.Button _tabActions, _tabCommands, _tabSocial, _tabSettings;
-        private UITK.VisualElement _actionsSectionVE, _commandsSectionVE, _socialSectionVE, _settingsSectionVE, _serversSectionVE;
-        private UITK.Button _tabServers;
-        private UITK.IVisualElementScheduledItem _serversPoll;
+        private UITK.VisualElement _actionsSectionVE, _commandsSectionVE, _socialSectionVE, _settingsSectionVE;
 
         private UITK.UIDocument _doc;
         private UITK.Button _ppkbCloseButton;
@@ -52,7 +50,7 @@ namespace PoncePuck.Keybinds
         private bool _prevCursorVisible = false;
 
         // tabs
-        private enum PpkbTab { Positions, Commands, Social, Servers, Settings }
+        private enum PpkbTab { Positions, Commands, Social, Settings }
         private PpkbTab _activeTab = PpkbTab.Positions;
 
         // Add a field to track button click
@@ -968,16 +966,14 @@ namespace PoncePuck.Keybinds
                 _tabActions = MakeTab("POSITIONS", () => ShowTab(PpkbTab.Positions));
                 _tabSocial = MakeTab("PLAYERS", () => ShowTab(PpkbTab.Social));
                 _tabCommands = MakeTab("COMMANDS", () => ShowTab(PpkbTab.Commands));
-                _tabServers = MakeTab("SERVERS", () => ShowTab(PpkbTab.Servers));
                 _tabSettings = MakeTab("SETTINGS", () => ShowTab(PpkbTab.Settings));
                 // Last tab keeps no right margin so SETTINGS sits flush with the right
                 // edge the same way POSITIONS hugs the left.
                 _tabSettings.style.marginRight = 0;
-                _tabBar.Add(_tabActions); _tabBar.Add(_tabCommands); _tabBar.Add(_tabSocial); _tabBar.Add(_tabServers); _tabBar.Add(_tabSettings);
+                _tabBar.Add(_tabActions); _tabBar.Add(_tabCommands); _tabBar.Add(_tabSocial); _tabBar.Add(_tabSettings);
                 AddTabHover(_tabActions, () => _activeTab == PpkbTab.Positions);
                 AddTabHover(_tabSocial, () => _activeTab == PpkbTab.Social);
                 AddTabHover(_tabCommands, () => _activeTab == PpkbTab.Commands);
-                AddTabHover(_tabServers, () => _activeTab == PpkbTab.Servers);
                 AddTabHover(_tabSettings, () => _activeTab == PpkbTab.Settings);
 
                 var scroll = new UITK.ScrollView
@@ -999,19 +995,10 @@ namespace PoncePuck.Keybinds
                 _socialSectionVE = new UITK.VisualElement();
                 _commandsSectionVE = new UITK.VisualElement();
                 _settingsSectionVE = new UITK.VisualElement();
-                _serversSectionVE = new UITK.VisualElement();
-                // PonceSite.ServersChanged is a static event, so a rebuilt panel would otherwise keep
-                // the previous instance alive through the subscription. Drop it with the element.
-                _serversSectionVE.RegisterCallback<UITK.DetachFromPanelEvent>(_ =>
-                {
-                    PoncePuck.LocalMute.PonceSite.ServersChanged -= RenderServersTab;
-                    StopServersPoll();
-                });
                 scroll.Add(_actionsSectionVE);
                 scroll.Add(_socialSectionVE);
                 scroll.Add(_commandsSectionVE);
                 scroll.Add(_settingsSectionVE);
-                scroll.Add(_serversSectionVE);
 
                 var row = new UITK.VisualElement();
                 row.style.flexDirection = UITK.FlexDirection.Row;
@@ -1054,9 +1041,9 @@ namespace PoncePuck.Keybinds
                     return b;
                 }
 
-                var donate = MakeDonateButton("DONATE", () =>
+                var donate = MakeDonateButton("COFFEE?", () =>
                 {
-                    PoncePuck.LocalMute.PonceSite.OpenExternal("https://poncepuck.net/donate/");
+                    Application.OpenURL("https://buymeacoffee.com/amikiir");
                 });
 
                 var reset = MakeResetButton("RESET TO DEFAULT", () =>
@@ -1118,191 +1105,17 @@ namespace PoncePuck.Keybinds
         private void ShowTab(PpkbTab t)
         {
             if (t == PpkbTab.Settings) ShowSettingsTab();
-            if (t == PpkbTab.Servers) ShowServersTab();
             _activeTab = t;
-
-            // Stop the live-server poll the moment we leave the tab. The site has no rate limiting
-            // of its own, so nothing but this stops an idle panel hammering it forever.
-            if (t != PpkbTab.Servers) StopServersPoll();
 
             _actionsSectionVE.style.display = (t == PpkbTab.Positions) ? UITK.DisplayStyle.Flex : UITK.DisplayStyle.None;
             _socialSectionVE.style.display = (t == PpkbTab.Social) ? UITK.DisplayStyle.Flex : UITK.DisplayStyle.None;
             _commandsSectionVE.style.display = (t == PpkbTab.Commands) ? UITK.DisplayStyle.Flex : UITK.DisplayStyle.None;
             _settingsSectionVE.style.display = (t == PpkbTab.Settings) ? UITK.DisplayStyle.Flex : UITK.DisplayStyle.None;
-            if (_serversSectionVE != null)
-                _serversSectionVE.style.display = (t == PpkbTab.Servers) ? UITK.DisplayStyle.Flex : UITK.DisplayStyle.None;
 
             if (_tabActions != null) SetTabVisual(_tabActions, _activeTab == PpkbTab.Positions);
             if (_tabSocial != null) SetTabVisual(_tabSocial, _activeTab == PpkbTab.Social);
             if (_tabCommands != null) SetTabVisual(_tabCommands, _activeTab == PpkbTab.Commands);
-            if (_tabServers != null) SetTabVisual(_tabServers, _activeTab == PpkbTab.Servers);
             if (_tabSettings != null) SetTabVisual(_tabSettings, _activeTab == PpkbTab.Settings);
-        }
-
-        // ---------- SERVERS tab: live poncepuck.net fleet ----------
-
-        private void StopServersPoll()
-        {
-            try { _serversPoll?.Pause(); } catch { }
-            _serversPoll = null;
-        }
-
-        private void ShowServersTab()
-        {
-            if (_serversSectionVE == null) return;
-
-            PoncePuck.LocalMute.PonceSite.ServersChanged -= RenderServersTab;
-            PoncePuck.LocalMute.PonceSite.ServersChanged += RenderServersTab;
-
-            RenderServersTab();
-            PoncePuck.LocalMute.PonceSite.RefreshServers(force: true);
-
-            // Poll only while this tab is on screen; ShowTab pauses it on the way out. 30s is well
-            // above the feed's own 25s cache, so we never ask for something that can have changed.
-            if (_serversPoll == null)
-            {
-                _serversPoll = _serversSectionVE.schedule.Execute(() =>
-                {
-                    if (_activeTab != PpkbTab.Servers || _ppkbPanel == null || _ppkbPanel.panel == null)
-                    {
-                        StopServersPoll();
-                        return;
-                    }
-                    PoncePuck.LocalMute.PonceSite.RefreshServers();
-                }).Every(30000);
-            }
-        }
-
-        private void RenderServersTab()
-        {
-            if (_serversSectionVE == null) return;
-            _serversSectionVE.Clear();
-
-            var list = PoncePuck.LocalMute.PonceSite.Servers;
-
-            if (!PoncePuck.LocalMute.PonceSite.ServersReady)
-            {
-                _serversSectionVE.Add(MakeServersNote("Loading server list…"));
-                return;
-            }
-            if (list == null || list.Count == 0)
-            {
-                _serversSectionVE.Add(MakeServersNote("No servers reported by poncepuck.net."));
-                return;
-            }
-
-            int live = 0, players = 0;
-            foreach (var sv in list) { if (sv.IsLive) { live++; players += sv.Players; } }
-
-            var head = new UITK.Label($"{live} server{(live == 1 ? "" : "s")} live · {players} player{(players == 1 ? "" : "s")} online");
-            MakeReadable(head);
-            head.style.fontSize = 11;
-            head.style.color = new UITK.StyleColor(new Color(0.62f, 0.62f, 0.62f));
-            head.style.marginBottom = 6;
-            _serversSectionVE.Add(head);
-
-            foreach (var sv in list)
-                _serversSectionVE.Add(MakeServerRow(sv));
-        }
-
-        private UITK.VisualElement MakeServersNote(string text)
-        {
-            var l = new UITK.Label(text);
-            MakeReadable(l);
-            l.style.fontSize = 12;
-            l.style.color = new UITK.StyleColor(new Color(0.62f, 0.62f, 0.62f));
-            l.style.marginTop = 8; l.style.marginBottom = 8;
-            return l;
-        }
-
-        private UITK.VisualElement MakeServerRow(PoncePuck.LocalMute.PonceSite.ServerRow sv)
-        {
-            var row = new UITK.VisualElement();
-            row.style.flexDirection = UITK.FlexDirection.Row;
-            row.style.alignItems = UITK.Align.Center;
-            row.style.height = 40;
-            row.style.marginBottom = 4;
-            row.style.paddingLeft = 10; row.style.paddingRight = 10;
-            row.style.backgroundColor = new UITK.StyleColor(RowBg);
-            row.style.borderTopLeftRadius = 6; row.style.borderTopRightRadius = 6;
-            row.style.borderBottomLeftRadius = 6; row.style.borderBottomRightRadius = 6;
-
-            // Live dot
-            var dot = new UITK.VisualElement();
-            dot.style.width = 8; dot.style.height = 8;
-            dot.style.flexShrink = 0; dot.style.marginRight = 10;
-            dot.style.borderTopLeftRadius = 4; dot.style.borderTopRightRadius = 4;
-            dot.style.borderBottomLeftRadius = 4; dot.style.borderBottomRightRadius = 4;
-            dot.style.backgroundColor = new UITK.StyleColor(sv.IsLive
-                ? new Color(0.40f, 0.85f, 0.45f)
-                : new Color(0.45f, 0.45f, 0.45f));
-            row.Add(dot);
-
-            var name = new UITK.Label(sv.Label);
-            MakeReadable(name);
-            name.style.fontSize = 14;
-            name.style.flexGrow = 1; name.style.flexShrink = 1;
-            name.style.overflow = UITK.Overflow.Hidden;
-            name.style.textOverflow = UITK.TextOverflow.Ellipsis;
-            name.style.whiteSpace = UITK.WhiteSpace.NoWrap;
-            row.Add(name);
-
-            // Score + period, only meaningful while a match is actually running.
-            string status = sv.StatusLabel, score = sv.ScoreLabel;
-            if (!string.IsNullOrEmpty(score))
-            {
-                var sc = new UITK.Label(score);
-                MakeReadable(sc);
-                sc.style.fontSize = 13;
-                sc.style.flexShrink = 0; sc.style.marginLeft = 8;
-                row.Add(sc);
-            }
-            if (!string.IsNullOrEmpty(status))
-            {
-                var st = new UITK.Label(status);
-                MakeReadable(st);
-                st.style.fontSize = 10;
-                st.style.color = new UITK.StyleColor(new Color(0.62f, 0.62f, 0.62f));
-                st.style.flexShrink = 0; st.style.marginLeft = 8;
-                st.style.minWidth = 46;
-                st.style.unityTextAlign = TextAnchor.MiddleRight;
-                row.Add(st);
-            }
-
-            var count = new UITK.Label(sv.IsLive
-                ? (sv.MaxPlayers > 0 ? $"{sv.Players}/{sv.MaxPlayers}" : sv.Players.ToString())
-                : "offline");
-            MakeReadable(count);
-            count.style.fontSize = 12;
-            count.style.color = new UITK.StyleColor(sv.IsLive ? Color.white : new Color(0.55f, 0.55f, 0.55f));
-            count.style.flexShrink = 0;
-            count.style.marginLeft = 10;
-            count.style.minWidth = 54;
-            count.style.unityTextAlign = TextAnchor.MiddleRight;
-            row.Add(count);
-
-            // JOIN hands Steam a launch-args deep link, the same one the website's join buttons use.
-            // Only offered when the feed actually gave us an address - see the note in PonceSite.
-            if (sv.CanJoin)
-            {
-                var join = new UITK.Button(() => PoncePuck.LocalMute.PonceSite.TryJoin(sv)) { text = "JOIN" };
-                MakeReadable(join);
-                join.style.height = 26;
-                join.style.minWidth = 62;
-                join.style.marginLeft = 10;
-                join.style.marginTop = 0; join.style.marginBottom = 0;
-                join.style.paddingLeft = 8; join.style.paddingRight = 8;
-                join.style.paddingTop = 0; join.style.paddingBottom = 0;
-                join.style.flexShrink = 0;
-                join.style.unityTextAlign = TextAnchor.MiddleCenter;
-                join.style.borderTopLeftRadius = 5; join.style.borderTopRightRadius = 5;
-                join.style.borderBottomLeftRadius = 5; join.style.borderBottomRightRadius = 5;
-                join.style.backgroundColor = new UITK.StyleColor(new Color(0.18f, 0.48f, 0.26f, 1f));
-                AddButtonFlash(join);
-                row.Add(join);
-            }
-
-            return row;
         }
 
         // ---------- Position Settings UI (mini-tabs per position) ----------
@@ -2888,7 +2701,6 @@ namespace PoncePuck.Keybinds
             infoSection.Add(ScoreboardUtil.MakeInfoRow("LAST SERVER",
                 PoncePuck.LocalMute.LocalMuteStore.CleanServerName(player.lastServerSeen)));
             infoSection.Add(ScoreboardUtil.MakeInfoRow("STEAM ID", player.steamId));
-            ScoreboardUtil.AddPonceStatRows(infoSection, player.steamId);
 
             // Same two-pane body as the scoreboard's info dialog: fixed left column for the name
             // and fields, NOTES taking the rest of the width.
@@ -2993,8 +2805,6 @@ namespace PoncePuck.Keybinds
                 infoPanel.Add(body);
 
                 // Button row (Profile, Save/Edit, and Close)
-                // Wraps: with the Ponce button this row carries four entries, which overflows the
-                // card at its narrow end.
                 var buttonRow = new UITK.VisualElement();
                 buttonRow.style.flexDirection = UITK.FlexDirection.Row;
                 buttonRow.style.flexWrap = UITK.Wrap.Wrap;
@@ -3032,15 +2842,6 @@ namespace PoncePuck.Keybinds
                 profileBtn.text = "STEAM PROFILE";
                 ScoreboardUtil.StyleDialogButton(profileBtn, ButtonBg);
                 buttonRow.Add(profileBtn);
-
-                // PONCE PROFILE - poncepuck.net, shown only when the stored Steam ID is usable.
-                if (ScoreboardUtil.HasUsableSteamId(player.steamId))
-                {
-                    var ponceBtn = new UITK.Button(() => ScoreboardUtil.OpenPonceProfile(player.steamId))
-                    { text = "PONCE PROFILE" };
-                    ScoreboardUtil.StyleDialogButton(ponceBtn, ButtonBg);
-                    buttonRow.Add(ponceBtn);
-                }
 
                 // Save/Edit toggle button
                 saveEditBtn = new UITK.Button(() =>
